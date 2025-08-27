@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Редактор изображений — Gemini 2.5 flash image</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Редактирование изображений по запросу</h1>
+      <p class="subtitle">Модель: Gemini-2.5-flash-image-preview</p>
+    </header>
+
+    <main class="container">
+      <section class="panel">
+        <div class="form-row">
+          <label for="images">Изображения (1..N)</label>
+          <input id="images" type="file" accept="image/*" multiple />
+          <div id="dropzone" class="dropzone" aria-label="Перетащите сюда изображения">
+            Перетащите сюда изображения или используйте выбор файлов
+          </div>
+          <small class="hint">Клик по превью — выбрать активное для редактирования</small>
+        </div>
+
+        <div id="inputPreview" class="preview-grid" aria-live="polite"></div>
+
+        <div class="form-row">
+          <label for="prompt">Текстовый запрос</label>
+          <textarea id="prompt" rows="3" placeholder="Опишите, как изменить изображение (например: 'Сделай небо ярче и добавь радугу')."></textarea>
+        </div>
+
+        <details id="settings" class="settings">
+          <summary>Настройки</summary>
+          <div class="settings-row">
+            <label for="apiBase">Адрес API (без завершающего /)</label>
+            <input id="apiBase" type="url" placeholder="https://your-server.example" />
+            <button id="saveSettingsBtn" class="secondary" type="button">Сохранить</button>
+          </div>
+          <small class="hint">Если оставить пустым — будет использован текущий домен. Путь: /api/edit</small>
+        </details>
+
+        <details id="savedPrompts" class="saved-prompts">
+          <summary>Сохранённые промпты</summary>
+          <div class="saved-toolbar">
+            <button id="savePromptBtn" class="secondary" type="button">Сохранить текущий</button>
+            <button id="clearPromptsBtn" class="secondary" type="button">Очистить список</button>
+          </div>
+          <ul id="savedList" class="saved-list" aria-live="polite"></ul>
+        </details>
+
+        <div class="actions">
+          <button id="runBtn" class="primary">Запустить</button>
+          <label class="chk">
+            <input id="textOnly" type="checkbox" />
+            <span>Только по тексту</span>
+          </label>
+          <button id="clearBtn" class="secondary">Очистить</button>
+        </div>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Результат</h2>
+        <div id="results" class="preview-grid"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <small>Локальное приложение. Данные обрабатываются через ваш сервер-прокси.</small>
+    </footer>
+
+    <div id="lightbox" class="lightbox" aria-hidden="true">
+      <div class="lightbox-toolbar">
+        <button data-action="zoom-in" title="Увеличить">+</button>
+        <button data-action="zoom-out" title="Уменьшить">−</button>
+        <button data-action="reset" title="Сброс">⟲</button>
+        <button data-action="close" title="Закрыть">✕</button>
+      </div>
+      <div class="lightbox-stage">
+        <img id="lightboxImg" alt="Предпросмотр" />
+      </div>
+    </div>
+
+    <div id="overlay" class="overlay" aria-hidden="true">
+      <div class="spinner"></div>
+    </div>
+
+    <script src="./app.js" defer></script>
+  </body>
+  </html>
+
+
