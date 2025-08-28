@@ -49,6 +49,7 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -412,6 +413,9 @@ const server = http.createServer((req, res) => {
   res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
   res.setHeader('access-control-allow-headers', 'content-type');
   res.setHeader('access-control-allow-credentials', 'true');
+  
+  // Запрет индексации поисковиками
+  res.setHeader('x-robots-tag', 'noindex, nofollow, nosnippet, noarchive, noimageindex');
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
