@@ -98,7 +98,14 @@ button:active { transform: translateY(1px); }
 .chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .chk input { accent-color: #6ea8fe; }
 
-.status { margin-top: 8px; color: var(--muted); min-height: 18px; font-size: 12px; }
+.status { 
+  margin-top: 8px; 
+  color: var(--muted); 
+  min-height: 18px; 
+  font-size: 12px; 
+  white-space: pre-line;
+  line-height: 1.4;
+}
 
 .preview-grid {
   display: grid;

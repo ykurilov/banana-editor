@@ -113,6 +113,51 @@
   }
 
   /**
+   * Переводит техническую ошибку в понятное сообщение
+   */
+  function humanizeError(message, details = null) {
+    const msg = String(message || '').toLowerCase();
+    
+    // Таймауты
+    if (msg.includes('timeout') || msg.includes('таймаут')) {
+      return 'AI модель слишком долго генерирует изображение. Попробуйте:\n• Упростить промпт\n• Уменьшить количество изображений\n• Повторить запрос через минуту';
+    }
+    
+    // Проблемы с API ключом
+    if (details && (details.status === 401 || details.status === 403)) {
+      return 'Проблема с доступом к API. Проверьте настройки API ключа на сервере';
+    }
+    
+    // Превышение лимитов
+    if (details && details.status === 429) {
+      return 'Превышен лимит запросов к AI. Подождите несколько минут и попробуйте снова';
+    }
+    
+    // Проблемы с изображением
+    if (msg.includes('image') && msg.includes('invalid')) {
+      return 'Проблема с загруженным изображением. Попробуйте другой файл (PNG, JPG)';
+    }
+    
+    // Блокировка контента
+    if (msg.includes('safety') || msg.includes('policy') || msg.includes('blocked')) {
+      return 'AI отказался генерировать изображение. Попробуйте изменить промпт';
+    }
+    
+    // Серверные ошибки
+    if (details && details.status >= 500) {
+      return 'Временная проблема на сервере AI. Попробуйте через несколько минут';
+    }
+    
+    // Сетевые проблемы
+    if (msg.includes('network') || msg.includes('connection') || msg.includes('fetch')) {
+      return 'Проблема с подключением к серверу. Проверьте интернет и попробуйте снова';
+    }
+    
+    // Если не удалось определить - возвращаем оригинал с объяснением
+    return `${message}\n\nЭто техническая ошибка. Попробуйте:\n• Повторить запрос\n• Изменить промпт\n• Обновить страницу`;
+  }
+
+  /**
    * Показывает детали ошибки в alert или консоли
    */
   function showErrorDetails(errorDetails) {
@@ -124,15 +169,9 @@
     if (errorDetails.raw) console.error('Сырой ответ:', errorDetails.raw);
     console.groupEnd();
     
-    // Также показываем в alert для пользователя
-    let alertText = `Ошибка API (${errorDetails.status})\n\n`;
-    alertText += `Сообщение: ${errorDetails.message}\n`;
-    if (errorDetails.upstream) {
-      alertText += `\nОшибка провайдера: ${JSON.stringify(errorDetails.upstream, null, 2)}\n`;
-    }
-    alertText += '\nПодробности в консоли браузера (F12)';
-    
-    alert(alertText);
+    // Показываем человекопонятное объяснение
+    const humanMessage = humanizeError(errorDetails.message, errorDetails);
+    alert(humanMessage);
   }
 
   /**
@@ -569,16 +608,19 @@
       }
 
       if (items.length === 0) {
-        setStatus('⚠️ Запрос выполнен, но результаты не получены. Проверьте консоль (F12) для диагностики.', 'error');
+        setStatus('AI не смог создать изображение. Попробуйте:\n• Изменить или упростить промпт\n• Убрать слишком специфичные детали\n• Повторить запрос через минуту', 'error');
       } else {
         setStatus(`Готово: ${items.length} изображение(й)`);
       }
       renderResults(items);
     } catch (e) {
       console.error('Generation error:', e);
-      const message = e && e.message ? e.message : 'Ошибка выполнения';
+      const originalMessage = e && e.message ? e.message : 'Ошибка выполнения';
       const details = e && e.details ? e.details : null;
-      setStatus(message, 'error', details);
+      
+      // Показываем понятное сообщение вместо технического
+      const humanMessage = humanizeError(originalMessage, details);
+      setStatus(humanMessage, 'error', details);
     } finally {
       runBtn.disabled = false; 
       showRunProgress(false);
