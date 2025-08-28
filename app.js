@@ -336,12 +336,13 @@
    * @param {boolean} textOnly
    * @param {string} canvasRatio
    */
-  async function callEditApi(files, prompt, textOnly, canvasRatio) {
+  async function callEditApi(files, prompt, textOnly, canvasRatio, resultsCount = 1) {
     console.log('🚀 Начинаем API запрос:', { 
       filesCount: files.length, 
       promptLength: prompt.length, 
       textOnly, 
-      canvasRatio 
+      canvasRatio,
+      resultsCount
     });
     
     const form = new FormData();
@@ -367,14 +368,32 @@
     const hasImages = (!textOnly && files.length > 0) || canvasRatio;
     form.append('textOnly', hasImages ? '0' : '1');
     form.append('prompt', finalPrompt);
+    form.append('resultsCount', String(resultsCount)); // Количество результатов для Runware
 
     const base = getApiBaseEffective();
     const url = (base ? `${base.replace(/\/$/, '')}` : '') + '/api/edit';
-    const resp = await fetch(url, {
-      method: 'POST',
-      body: form,
-    });
-    if (!resp.ok) {
+    // Увеличиваем таймаут для Runware запросов
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.error(`⏰ Клиентский таймаут после 180 секунд`);
+      controller.abort();
+    }, 180000); // 3 минуты
+    
+    const startTime = Date.now();
+    console.log(`🚀 Отправляем запрос к ${url} с таймаутом 180 сек`);
+    
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        body: form,
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      const elapsed = Date.now() - startTime;
+      console.log(`✅ Получен ответ от сервера за ${elapsed}ms`);
+    
+      if (!resp.ok) {
       let errorInfo = { status: resp.status, statusText: resp.statusText };
       try {
         const text = await resp.text();
@@ -435,6 +454,21 @@
     }
     
     return data.results || [];
+      
+    } catch (error) {
+      clearTimeout(timeoutId);
+      
+      // Обрабатываем AbortError (таймаут)
+      if (error.name === 'AbortError') {
+        console.error('⏰ Запрос отменен по таймауту на клиенте');
+        const timeoutError = new Error('Request timeout - генерация заняла слишком много времени');
+        timeoutError.details = { timeout: true };
+        throw timeoutError;
+      }
+      
+      // Другие ошибки передаем дальше
+      throw error;
+    }
   }
 
   function renderResults(items) {
@@ -447,9 +481,22 @@
       wrapper.className = 'thumb';
       const img = document.createElement('img');
       img.alt = `Результат ${idx + 1}`;
-      const dataUrl = `data:${it.mimeType};base64,${it.b64}`;
-      dataUrls.push(dataUrl);
-      img.src = dataUrl;
+      
+      // Поддержка как base64 (Gemini/OpenRouter), так и URL (Runware)
+      let imageSrc;
+      if (it.imageURL) {
+        // Runware возвращает готовый URL
+        imageSrc = it.imageURL;
+      } else if (it.b64) {
+        // Gemini/OpenRouter возвращают base64
+        imageSrc = `data:${it.mimeType};base64,${it.b64}`;
+      } else {
+        console.warn('Неизвестный формат изображения:', it);
+        return;
+      }
+      
+      dataUrls.push(imageSrc);
+      img.src = imageSrc;
       img.style.cursor = 'zoom-in';
       img.addEventListener('click', () => {
         if (!lightbox || !lightboxImg) return;
@@ -870,47 +917,9 @@
       showRunProgress(true, 'Генерация...');
 
       let items = [];
-      if (want === 1) {
-        items = await callEditApi(files, prompt, textOnly, canvasRatio);
-      } else if (runParallel) {
-        const tasks = Array.from({ length: want }, () => callEditApi(files, prompt, textOnly, canvasRatio));
-        const all = await Promise.allSettled(tasks);
-        
-        // Детальная диагностика параллельных запросов
-        let successCount = 0;
-        let errorCount = 0;
-        for (let i = 0; i < all.length; i++) {
-          const result = all[i];
-          if (result.status === 'fulfilled') {
-            successCount++;
-            items = items.concat(result.value);
-            if (result.value.length === 0) {
-              console.warn(`⚠️ Параллельный запрос ${i + 1} вернул пустой результат`);
-            }
-          } else {
-            errorCount++;
-            console.error(`❌ Параллельный запрос ${i + 1} завершился ошибкой:`, result.reason);
-          }
-        }
-        
-        console.log(`📊 Параллельные запросы: ${successCount} успешных, ${errorCount} с ошибками, ${items.length} изображений получено`);
-      } else {
-        // Последовательные запросы с диагностикой
-        for (let i = 0; i < want; i += 1) {
-          try {
-            console.log(`🔄 Последовательный запрос ${i + 1} из ${want}`);
-            const res = await callEditApi(files, prompt, textOnly, canvasRatio);
-            items = items.concat(res);
-            if (res.length === 0) {
-              console.warn(`⚠️ Последовательный запрос ${i + 1} вернул пустой результат`);
-            }
-          } catch (e) {
-            console.error(`❌ Последовательный запрос ${i + 1} завершился ошибкой:`, e);
-            // Не прерываем цикл, продолжаем с следующим запросом
-          }
-        }
-        console.log(`📊 Последовательные запросы завершены: ${items.length} изображений получено`);
-      }
+      // Для Runware делаем один запрос с нужным количеством результатов  
+      console.log(`🚀 Запрашиваем ${want} изображений в одном запросе`);
+      items = await callEditApi(files, prompt, textOnly, canvasRatio, want);
 
       // Проверяем результат перед отображением
       if (items.length === 0) {

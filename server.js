@@ -41,6 +41,9 @@ const MODEL = 'gemini-2.5-flash-image-preview';
 const PROVIDER = String(process.env.PROVIDER || 'gemini').toLowerCase();
 const OR_KEY = process.env.OPENROUTER_API_KEY || '';
 const OR_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-exp';
+const RUNWARE_API_KEY = process.env.RUNWARE_API_KEY || '';
+const RUNWARE_RESULTS_COUNT = Number(process.env.RUNWARE_RESULTS_COUNT || 2);
+const RUNWARE_TIMEOUT_MS = Number(process.env.RUNWARE_TIMEOUT_MS || 45000);
 const REQ_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 15000);
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || '';
 
@@ -192,6 +195,127 @@ function requestGeminiGenerate({ apiKey, model, prompt, images }) {
   });
 }
 
+function generateTaskUUID() {
+  const uuid = crypto.randomUUID();
+  console.log(`🆔 Сгенерированный UUID: ${uuid}`);
+  return uuid;
+}
+
+function requestRunwareGenerate({ apiKey, prompt, images, resultsCount = 2 }) {
+  const taskUUID = generateTaskUUID();
+  
+  // Создаем referenceImages только если есть изображения
+  let referenceImages = [];
+  let hasReferenceImages = false;
+  
+  if (images && images.length > 0) {
+    referenceImages = images.map(img => `data:${img.mimeType};base64,${img.base64}`);
+    hasReferenceImages = true;
+    console.log(`📎 Создано ${referenceImages.length} референсных изображений`);
+    console.log(`🎯 Размеры референсов:`, referenceImages.map(img => `${Math.round(img.length / 1024)}KB`));
+  } else {
+    console.log(`📝 Text-to-image генерация (без референсных изображений)`);
+  }
+  
+  console.log(`🎯 Runware запрос:`, {
+    resultsCount,
+    hasReferenceImages,
+    referenceImagesCount: referenceImages.length,
+    promptLength: prompt.length,
+    promptPreview: prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''),
+    taskUUID,
+    timeout: `${RUNWARE_TIMEOUT_MS}ms`
+  });
+  
+  const payload = [{
+    taskType: "imageInference",
+    numberResults: resultsCount,
+    outputFormat: "JPEG", 
+    includeCost: true,
+    outputType: ["URL"],
+    model: "google:4@1",
+    positivePrompt: prompt,
+    taskUUID: taskUUID
+  }];
+  
+  // Добавляем referenceImages только если есть изображения
+  if (hasReferenceImages) {
+    payload[0].referenceImages = referenceImages;
+    console.log(`✅ Добавлено поле referenceImages с ${referenceImages.length} изображениями`);
+  } else {
+    console.log(`✅ Поле referenceImages НЕ добавлено (text-to-image)`);
+  }
+
+  const payloadStr = JSON.stringify(payload);
+  const endpoint = new URL('https://api.runware.ai/v1/image/generate');
+
+  const options = {
+    method: 'POST',
+    hostname: endpoint.hostname,
+    path: endpoint.pathname,
+    headers: {
+      'authorization': `Bearer ${apiKey}`,
+      'content-type': 'application/json; charset=utf-8',
+      'accept': 'application/json',
+      'content-length': Buffer.byteLength(payloadStr)
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    console.log(`⏱️ Начинаем HTTP запрос к Runware...`);
+    const startTime = Date.now();
+    
+    const req = https.request(options, (res) => {
+      console.log(`📡 Получен ответ от Runware, статус: ${res.statusCode}`);
+      const chunks = [];
+      res.on('data', (d) => {
+        chunks.push(d);
+        console.log(`📊 Получено ${d.length} байт данных`);
+      });
+      res.on('end', () => {
+        const elapsed = Date.now() - startTime;
+        console.log(`✅ Runware запрос завершен за ${elapsed}ms`);
+        const text = Buffer.concat(chunks).toString('utf8');
+        try {
+          const json = JSON.parse(text);
+          json.__statusCode = res.statusCode;
+          
+          // Проверяем на ошибки в ответе Runware
+          if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
+            console.error(`❌ Runware вернул ошибки:`, json.errors);
+            const errorMessages = json.errors.map(err => `${err.code}: ${err.message}`).join('; ');
+            reject(new Error(`Runware API error: ${errorMessages}`));
+            return;
+          }
+          
+          resolve(json);
+        } catch (e) {
+          console.error(`❌ Ошибка парсинга JSON от Runware:`, e.message);
+          console.error(`Полученный текст:`, text.substring(0, 500));
+          reject(new Error('Bad JSON from Runware'));
+        }
+      });
+    });
+    
+    req.setTimeout(RUNWARE_TIMEOUT_MS, () => {
+      const elapsed = Date.now() - startTime;
+      console.error(`⏰ Runware таймаут после ${elapsed}ms (лимит: ${RUNWARE_TIMEOUT_MS}ms)`);
+      req.destroy(new Error(`Runware timeout after ${elapsed}ms`));
+    });
+    
+    req.on('error', (err) => {
+      const elapsed = Date.now() - startTime;
+      console.error(`❌ Ошибка HTTP запроса к Runware после ${elapsed}ms:`, err.message);
+      reject(err);
+    });
+    
+    console.log(`📤 Отправляем payload размером ${payloadStr.length} байт`);
+  console.log(`🔍 Содержимое payload:`, JSON.stringify(payload, null, 2));
+    req.write(payloadStr);
+    req.end();
+  });
+}
+
 function requestOpenRouterGenerate({ apiKey, model, prompt, images }) {
   const userContent = [];
   userContent.push({ type: 'text', text: prompt });
@@ -281,26 +405,39 @@ function getImageMimeType(filename) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function callWithRetries(fn, { retries = 2, baseDelayMs = 400, maxDelayMs = 2000 } = {}) {
   let attempt = 0; let last;
+  console.log(`🔁 Начинаем retry запрос, максимум попыток: ${retries + 1}`);
+  
   // Всего попыток = 1 + retries
   // backoff: base * 2^attempt + jitter
   while (attempt <= retries) {
     try {
+      console.log(`🚀 Попытка ${attempt + 1} из ${retries + 1}`);
       const json = await fn();
       const status = Number(json && json.__statusCode);
       const err = json && json.error;
       const code = Number(err && err.code);
       const shouldRetry = (status === 429 || (status >= 500 && status < 600)) || (code === 429 || (code >= 500 && code < 600));
+      
+      console.log(`📋 Результат попытки ${attempt + 1}:`, { status, hasError: !!err, shouldRetry });
+      
       if (shouldRetry && attempt < retries) {
         const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs) + Math.floor(Math.random() * 200);
+        console.log(`⏳ Retry через ${delay}ms из-за статуса ${status}`);
         await sleep(delay);
         attempt += 1;
         last = json;
         continue;
       }
+      console.log(`✅ Retry завершен успешно на попытке ${attempt + 1}`);
       return json;
     } catch (e) {
-      if (attempt >= retries) throw e;
+      console.log(`❌ Ошибка на попытке ${attempt + 1}:`, e.message);
+      if (attempt >= retries) {
+        console.log(`🔥 Исчерпаны все попытки retry`);
+        throw e;
+      }
       const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs) + Math.floor(Math.random() * 200);
+      console.log(`⏳ Retry через ${delay}ms из-за ошибки`);
       await sleep(delay);
       attempt += 1;
       last = e;
@@ -310,8 +447,15 @@ async function callWithRetries(fn, { retries = 2, baseDelayMs = 400, maxDelayMs 
 }
 
 async function handleEdit(req, res) {
-  if (!API_KEY) {
-    return sendJson(res, 400, { error: 'GEMINI_API_KEY не задан' });
+  console.log(`🌐 Получен запрос на /api/edit от ${req.headers['x-forwarded-for'] || req.connection.remoteAddress}`);
+  console.log(`📋 Headers:`, {
+    'content-type': req.headers['content-type'],
+    'content-length': req.headers['content-length'],
+    'user-agent': req.headers['user-agent']
+  });
+  
+  if (!API_KEY && !RUNWARE_API_KEY) {
+    return sendJson(res, 400, { error: 'Ни один API ключ не задан' });
   }
   const MAX = 25 * 1024 * 1024; // 25MB
   const chunks = [];
@@ -333,6 +477,7 @@ async function handleEdit(req, res) {
       const { fields, files } = parseMultipart(req, body);
       const prompt = String(fields.prompt || '').trim();
       const textOnly = String(fields.textOnly || '0') === '1';
+      const resultsCount = Math.max(1, Math.min(4, Number(fields.resultsCount) || RUNWARE_RESULTS_COUNT));
       if (!prompt) return sendJson(res, 400, { error: 'prompt обязателен' });
       if (!textOnly && (!files || files.length === 0)) return sendJson(res, 400, { error: 'нужно минимум одно изображение или включить textOnly' });
 
@@ -346,6 +491,102 @@ async function handleEdit(req, res) {
       if (PROVIDER === 'openrouter') {
         if (!OR_KEY) return sendJson(res, 400, { error: 'OPENROUTER_API_KEY не задан' });
         json = await callWithRetries(() => requestOpenRouterGenerate({ apiKey: OR_KEY, model: OR_MODEL, prompt, images }), { retries: 2 });
+      } else if (PROVIDER === 'runware') {
+        if (!RUNWARE_API_KEY) return sendJson(res, 400, { error: 'RUNWARE_API_KEY не задан' });
+        console.log(`🖼️ Runware: запрашиваем ${resultsCount} изображений`);
+        
+        try {
+          json = await callWithRetries(() => requestRunwareGenerate({ apiKey: RUNWARE_API_KEY, prompt, images, resultsCount }), { retries: 1 });
+          
+          // Проверяем статус ответа от Runware
+          if (json.__statusCode && json.__statusCode !== 200) {
+            console.error(`❌ Runware вернул статус ${json.__statusCode}:`, json);
+            
+            if (json.__statusCode >= 500) {
+              return sendJson(res, 502, { 
+                error: 'Временная проблема на сервере AI. Попробуйте через несколько минут', 
+                details: `Runware API статус: ${json.__statusCode}`,
+                provider: 'runware',
+                upstream: json
+              });
+            } else if (json.__statusCode === 429) {
+              return sendJson(res, 429, { 
+                error: 'Превышен лимит запросов к AI. Подождите и попробуйте снова', 
+                details: 'Rate limit exceeded',
+                provider: 'runware'
+              });
+            } else if (json.__statusCode === 401 || json.__statusCode === 403) {
+              return sendJson(res, 401, { 
+                error: 'Проблема с API ключом Runware', 
+                details: `Authentication failed: ${json.__statusCode}`,
+                provider: 'runware'
+              });
+            }
+          }
+          
+        } catch (error) {
+          console.error('🔥 Ошибка при запросе к Runware:', error.message);
+          
+          // Попробуем Runware без референсных изображений
+          if (images.length > 0) {
+            console.log('🔄 Пробуем Runware без референсных изображений...');
+            try {
+              json = await callWithRetries(() => requestRunwareGenerate({ 
+                apiKey: RUNWARE_API_KEY, 
+                prompt: `${prompt} (по мотивам загруженного изображения)`, 
+                images: [], // Без референсов
+                resultsCount 
+              }), { retries: 1 });
+              console.log('✅ Runware без референсов успешен');
+            } catch (noRefError) {
+              console.error('❌ Runware без референсов тоже не сработал:', noRefError.message);
+              
+              // Fallback на Gemini
+              if (API_KEY) {
+                console.log('🔄 Пробуем fallback на Gemini...');
+                try {
+                  json = await callWithRetries(() => requestGeminiGenerate({ apiKey: API_KEY, model: MODEL, prompt, images }), { retries: 1 });
+                  console.log('✅ Fallback на Gemini успешен');
+                } catch (geminiError) {
+                  console.error('❌ Fallback на Gemini тоже не сработал:', geminiError.message);
+                  return sendJson(res, 502, { 
+                    error: 'Временная проблема на сервере AI. Попробуйте через несколько минут', 
+                    details: `Runware с референсами: ${error.message}, Runware без референсов: ${noRefError.message}, Gemini: ${geminiError.message}`,
+                    provider: 'all-failed'
+                  });
+                }
+              } else {
+                return sendJson(res, 502, { 
+                  error: 'Временная проблема на сервере AI. Попробуйте через несколько минут', 
+                  details: `Runware с референсами: ${error.message}, Runware без референсов: ${noRefError.message}`,
+                  provider: 'runware-failed'
+                });
+              }
+            }
+          } else {
+            // Fallback на Gemini для text-to-image
+            if (API_KEY) {
+              console.log('🔄 Пробуем fallback на Gemini для text-to-image...');
+              try {
+                json = await callWithRetries(() => requestGeminiGenerate({ apiKey: API_KEY, model: MODEL, prompt, images }), { retries: 1 });
+                console.log('✅ Fallback на Gemini успешен');
+              } catch (geminiError) {
+                console.error('❌ Fallback на Gemini тоже не сработал:', geminiError.message);
+                return sendJson(res, 502, { 
+                  error: 'Временная проблема на сервере AI. Попробуйте через несколько минут', 
+                  details: `Runware: ${error.message}, Gemini: ${geminiError.message}`,
+                  provider: 'runware+gemini'
+                });
+              }
+            } else {
+              return sendJson(res, 502, { 
+                error: 'Временная проблема на сервере AI. Попробуйте через несколько минут', 
+                details: error.message,
+                provider: 'runware'
+              });
+            }
+          }
+        }
       } else {
         if (!API_KEY) return sendJson(res, 400, { error: 'GEMINI_API_KEY не задан' });
         json = await callWithRetries(() => requestGeminiGenerate({ apiKey: API_KEY, model: MODEL, prompt, images }), { retries: 2 });
@@ -360,6 +601,38 @@ async function handleEdit(req, res) {
           const match = content && content.match(/data:(image\/(?:png|jpeg|jpg));base64,([A-Za-z0-9+/=]+)/);
           if (match) {
             results.push({ mimeType: match[1], b64: match[2], filename: 'result.png' });
+          }
+        } else if (PROVIDER === 'runware') {
+          // Обработка ответа от Runware API  
+          console.log('📦 Runware response structure:', JSON.stringify(json, null, 2));
+          console.log('📋 Runware response status:', json.__statusCode);
+          
+          if (json.data && Array.isArray(json.data) && json.data.length > 0) {
+            console.log(`✅ Runware вернул ${json.data.length} изображений`);
+            json.data.forEach((item, index) => {
+              if (item && item.imageURL) {
+                console.log(`🖼️ Изображение ${index + 1}: ${item.imageURL} (cost: ${item.cost})`);
+                // Для Runware используем imageURL, конвертируем в base64 если нужно
+                results.push({ 
+                  mimeType: 'image/jpeg', 
+                  imageURL: item.imageURL,
+                  imageUUID: item.imageUUID,
+                  cost: item.cost,
+                  seed: item.seed,
+                  filename: `runware_result_${index + 1}.jpg` 
+                });
+              }
+            });
+          } else if (json.data && Array.isArray(json.data) && json.data.length === 0) {
+            console.warn('⚠️ Runware вернул пустой массив данных');
+          } else {
+            console.warn('⚠️ Неожиданная структура ответа от Runware:', {
+              hasData: !!json.data,
+              dataType: typeof json.data,
+              isArray: Array.isArray(json.data),
+              dataLength: json.data ? json.data.length : 'N/A',
+              fullResponse: json
+            });
           }
         } else {
           const candidates = (json && json.candidates) || [];
