@@ -38,7 +38,13 @@
         </details>
 
         <div class="actions">
-          <button id="runBtn" class="primary">Запустить</button>
+          <div class="run-group">
+            <button id="runBtn" class="primary">Запустить</button>
+            <div id="runProgress" class="run-progress" aria-hidden="true">
+              <div class="mini-spinner"></div>
+              <span class="progress-text">Генерация...</span>
+            </div>
+          </div>
           <label class="chk">
             <span>Кол-во</span>
             <select id="outCount">

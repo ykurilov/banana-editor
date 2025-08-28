@@ -26,6 +26,8 @@
   /** @type {HTMLDivElement} */
   const overlay = document.getElementById('overlay');
   /** @type {HTMLDivElement} */
+  const runProgress = document.getElementById('runProgress');
+  /** @type {HTMLDivElement} */
   const dropzone = document.getElementById('dropzone');
   /** @type {HTMLInputElement} */
   const textOnlyChk = document.getElementById('textOnly');
@@ -337,6 +339,14 @@
     overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
   }
 
+  // Local progress indicator helpers
+  function showRunProgress(show, text = 'Генерация...') {
+    if (!runProgress) return;
+    runProgress.setAttribute('aria-hidden', show ? 'false' : 'true');
+    const textEl = runProgress.querySelector('.progress-text');
+    if (textEl && text) textEl.textContent = text;
+  }
+
   // Zoom & Pan for lightbox
   /** @type {number} */ let currentZoom = 1;
   /** @type {number} */ let offsetX = 0;
@@ -457,8 +467,9 @@
       if (!textOnly && files.length === 0) { setStatus('Загрузите хотя бы одно изображение или включите "Только по тексту"', 'error'); return; }
       if (!prompt) { setStatus('Введите текстовый запрос', 'error'); return; }
 
-      runBtn.disabled = true; clearBtn.disabled = true;
-      setStatus('Отправляю запрос...'); showOverlay(true);
+      runBtn.disabled = true;
+      setStatus('Отправляю запрос...'); 
+      showRunProgress(true, 'Генерация...');
 
       let items = [];
       if (want === 1) {
@@ -479,7 +490,8 @@
     } catch (e) {
       setStatus(e && e.message ? e.message : 'Ошибка выполнения', 'error');
     } finally {
-      runBtn.disabled = false; clearBtn.disabled = false; showOverlay(false);
+      runBtn.disabled = false; 
+      showRunProgress(false);
     }
   });
 
