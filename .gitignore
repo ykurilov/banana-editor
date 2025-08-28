@@ -6,6 +6,9 @@ node_modules/
 env
 .env.*
 
+# uploads
+uploads/
+
 # logs
 *.log
 npm-debug.log*

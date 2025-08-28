@@ -51,6 +51,9 @@
   let selectedIndices = new Set();
   /** @type {number} */
   let lastSelectedIndex = -1;
+  
+  /** Управление сессией для серверного хранения */
+  let currentSessionId = localStorage.getItem('currentSessionId') || null;
 
   /**
    * Форматирует байты в читаемый размер
@@ -251,7 +254,7 @@
     void renderInputPreview(currentFiles);
   }
 
-  imagesInput.addEventListener('change', () => {
+  imagesInput.addEventListener('change', async () => {
     const added = imagesInput.files ? Array.from(imagesInput.files) : [];
     if (!added.length) return;
     const startLen = currentFiles.length;
@@ -263,6 +266,9 @@
     }
     imagesInput.value = '';
     void renderInputPreview(currentFiles);
+    
+    // Автосохранение на сервер
+    void saveImagesToServer(added);
   });
 
   // Drag-and-drop
@@ -277,13 +283,16 @@
     ['dragleave','drop'].forEach((ev) => {
       dropzone.addEventListener(ev, () => dropzone.classList.remove('dragover'));
     });
-    dropzone.addEventListener('drop', (e) => {
+    dropzone.addEventListener('drop', async (e) => {
       const dt = e.dataTransfer;
       if (!dt) return;
       const files = Array.from(dt.files).filter((f) => f.type.startsWith('image/'));
       if (files.length === 0) return;
       currentFiles = currentFiles.concat(files);
       void renderInputPreview(currentFiles);
+      
+      // Автосохранение на сервер
+      void saveImagesToServer(files);
     });
   }
 
@@ -296,6 +305,10 @@
     currentFiles = [];
     selectedIndices = new Set();
     lastSelectedIndex = -1;
+    
+    // Начинаем новую сессию на сервере
+    currentSessionId = null;
+    localStorage.removeItem('currentSessionId');
   });
 
   /**
@@ -467,6 +480,90 @@
     runProgress.setAttribute('aria-hidden', show ? 'false' : 'true');
     const textEl = runProgress.querySelector('.progress-text');
     if (textEl && text) textEl.textContent = text;
+  }
+
+  // ===== Server image storage =====
+  
+  /**
+   * Сохраняет изображения на сервер
+   * @param {File[]} files 
+   */
+  async function saveImagesToServer(files) {
+    if (!files || files.length === 0) return;
+    
+    try {
+      const form = new FormData();
+      if (currentSessionId) {
+        form.append('sessionId', currentSessionId);
+      }
+      
+      files.forEach((file) => {
+        form.append('images', file, file.name);
+      });
+      
+      const base = getApiBaseEffective();
+      const url = (base ? `${base.replace(/\/$/, '')}` : '') + '/api/upload';
+      const resp = await fetch(url, {
+        method: 'POST',
+        body: form,
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        currentSessionId = data.sessionId;
+        localStorage.setItem('currentSessionId', currentSessionId);
+        console.log('Images saved to server:', data);
+      } else {
+        console.warn('Failed to save images to server:', resp.status);
+      }
+    } catch (e) {
+      console.warn('Error saving images to server:', e);
+    }
+  }
+
+  /**
+   * Загружает изображения из серверной сессии
+   */
+  async function loadImagesFromServer() {
+    if (!currentSessionId) return [];
+    
+    try {
+      const base = getApiBaseEffective();
+      const url = (base ? `${base.replace(/\/$/, '')}` : '') + `/api/session/${currentSessionId}`;
+      const resp = await fetch(url);
+      
+      if (!resp.ok) {
+        if (resp.status === 404) {
+          // Сессия не найдена - создаем новую
+          currentSessionId = null;
+          localStorage.removeItem('currentSessionId');
+        }
+        return [];
+      }
+      
+      const data = await resp.json();
+      const files = [];
+      
+      for (const fileInfo of data.files) {
+        try {
+          const fileUrl = (base ? `${base.replace(/\/$/, '')}` : '') + fileInfo.url;
+          const fileResp = await fetch(fileUrl);
+          if (fileResp.ok) {
+            const blob = await fileResp.blob();
+            const file = new File([blob], fileInfo.name, { type: fileInfo.mimeType });
+            files.push(file);
+          }
+        } catch (e) {
+          console.warn('Failed to load file:', fileInfo.name, e);
+        }
+      }
+      
+      console.log(`Restored ${files.length} images from server session`);
+      return files;
+    } catch (e) {
+      console.warn('Error loading images from server:', e);
+      return [];
+    }
   }
 
   // Zoom & Pan for lightbox
@@ -748,6 +845,22 @@
   }
   // Initial render
   renderSavedList();
+  
+  // ===== Auto-restore images on page load =====
+  (async function initializeApp() {
+    try {
+      const restoredFiles = await loadImagesFromServer();
+      if (restoredFiles.length > 0) {
+        currentFiles = restoredFiles;
+        void renderInputPreview(currentFiles);
+        
+        setStatus(`✨ Восстановлено ${restoredFiles.length} изображение(й) из предыдущей сессии`);
+        setTimeout(() => setStatus(''), 3000);
+      }
+    } catch (e) {
+      console.warn('Failed to restore images:', e);
+    }
+  })();
 })();
 
 

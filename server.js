@@ -5,6 +5,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const crypto = require('crypto');
 
 // Simple .env loader (no deps)
 function loadDotEnv(filePath) {
@@ -242,6 +243,40 @@ function requestOpenRouterGenerate({ apiKey, model, prompt, images }) {
   });
 }
 
+// ===== Session & File helpers =====
+function generateSessionId() {
+  return 'session_' + crypto.randomBytes(8).toString('hex');
+}
+
+function ensureUploadsDir() {
+  const uploadsDir = path.join(__dirname, 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  return uploadsDir;
+}
+
+function ensureSessionDir(sessionId) {
+  const uploadsDir = ensureUploadsDir();
+  const sessionDir = path.join(uploadsDir, sessionId);
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
+  return sessionDir;
+}
+
+function getImageMimeType(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg', 
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp'
+  };
+  return mimeTypes[ext] || 'image/png';
+}
+
 // ===== Retry helpers =====
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function callWithRetries(fn, { retries = 2, baseDelayMs = 400, maxDelayMs = 2000 } = {}) {
@@ -405,6 +440,112 @@ async function handleEdit(req, res) {
   });
 }
 
+// ===== Upload handler =====
+async function handleUpload(req, res) {
+  const MAX = 25 * 1024 * 1024; // 25MB
+  const chunks = [];
+  let size = 0;
+  req.on('data', (d) => {
+    size += d.length;
+    if (size > MAX) {
+      req.destroy();
+    } else {
+      chunks.push(d);
+    }
+  });
+  req.on('close', () => {
+    if (size > MAX) sendJson(res, 413, { error: 'Слишком большой запрос' });
+  });
+  req.on('end', async () => {
+    try {
+      const body = Buffer.concat(chunks);
+      const { fields, files } = parseMultipart(req, body);
+      
+      let sessionId = fields.sessionId;
+      if (!sessionId) {
+        sessionId = generateSessionId();
+      }
+      
+      const sessionDir = ensureSessionDir(sessionId);
+      const savedFiles = [];
+      
+      for (const file of files) {
+        // Генерируем безопасное имя файла
+        const timestamp = Date.now();
+        const ext = path.extname(file.filename || '.png');
+        const safeName = `${timestamp}_${crypto.randomBytes(4).toString('hex')}${ext}`;
+        const filePath = path.join(sessionDir, safeName);
+        
+        fs.writeFileSync(filePath, file.data);
+        
+        savedFiles.push({
+          originalName: file.filename,
+          savedName: safeName,
+          mimeType: getImageMimeType(safeName),
+          size: file.data.length
+        });
+      }
+      
+      sendJson(res, 200, { 
+        sessionId, 
+        files: savedFiles,
+        message: `Сохранено ${savedFiles.length} файл(ов)` 
+      });
+    } catch (e) {
+      sendJson(res, 400, { error: e.message || 'Ошибка загрузки файлов' });
+    }
+  });
+}
+
+// ===== Session handler =====
+async function handleSession(req, res) {
+  try {
+    const parsed = new URL(req.url, `http://${req.headers.host}`);
+    const pathParts = parsed.pathname.split('/');
+    const sessionId = pathParts[3]; // /api/session/{sessionId}
+    const fileName = pathParts[5]; // /api/session/{sessionId}/file/{fileName}
+    
+    if (!sessionId) {
+      return sendJson(res, 400, { error: 'sessionId обязателен' });
+    }
+    
+    const sessionDir = path.join(__dirname, 'uploads', sessionId);
+    if (!fs.existsSync(sessionDir)) {
+      return sendJson(res, 404, { error: 'Сессия не найдена' });
+    }
+    
+    // Если запрашивается конкретный файл
+    if (fileName) {
+      const filePath = path.join(sessionDir, fileName);
+      if (!fs.existsSync(filePath)) {
+        return sendJson(res, 404, { error: 'Файл не найден' });
+      }
+      
+      const mimeType = getImageMimeType(fileName);
+      res.writeHead(200, { 'content-type': mimeType });
+      return fs.createReadStream(filePath).pipe(res);
+    }
+    
+    // Возвращаем список файлов в сессии
+    const files = fs.readdirSync(sessionDir)
+      .filter(name => /\.(png|jpg|jpeg|gif|webp)$/i.test(name))
+      .map(name => {
+        const filePath = path.join(sessionDir, name);
+        const stats = fs.statSync(filePath);
+        return {
+          name,
+          mimeType: getImageMimeType(name),
+          size: stats.size,
+          url: `/api/session/${sessionId}/file/${name}`
+        };
+      });
+      
+    sendJson(res, 200, { sessionId, files });
+  } catch (e) {
+    sendJson(res, 400, { error: e.message || 'Ошибка получения сессии' });
+  }
+}
+
 const server = http.createServer((req, res) => {
   const parsed = new URL(req.url, `http://${req.headers.host}`);
   // CORS
@@ -422,6 +563,12 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'POST' && parsed.pathname === '/api/edit') {
     return void handleEdit(req, res);
+  }
+  if (req.method === 'POST' && parsed.pathname === '/api/upload') {
+    return void handleUpload(req, res);
+  }
+  if (req.method === 'GET' && parsed.pathname.startsWith('/api/session/')) {
+    return void handleSession(req, res);
   }
   if (req.method === 'GET') return serveStatic(req, res);
   notFound(res);
