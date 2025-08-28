@@ -399,6 +399,17 @@
     
     if (!data.results || data.results.length === 0) {
       console.warn('⚠️ API вернул пустой результат:', data);
+      
+      // Детальная диагностика пустого ответа
+      const diagnosis = diagnosePoorResponse(data);
+      const error = new Error(diagnosis.message);
+      error.details = { 
+        status: resp.status, 
+        diagnosis: diagnosis.reason,
+        serverResponse: data,
+        message: diagnosis.message
+      };
+      throw error;
     }
     
     return data.results || [];
@@ -480,6 +491,142 @@
     runProgress.setAttribute('aria-hidden', show ? 'false' : 'true');
     const textEl = runProgress.querySelector('.progress-text');
     if (textEl && text) textEl.textContent = text;
+  }
+
+  /**
+   * Анализирует пустой ответ от AI провайдера и определяет причину
+   * @param {Object} data - ответ от API
+   * @returns {{ reason: string, message: string }}
+   */
+  function diagnosePoorResponse(data) {
+    console.group('🔍 Диагностика пустого ответа:');
+    console.log('Полный ответ:', data);
+    
+    // Проверяем наличие candidates (Gemini)
+    if (data.candidates && Array.isArray(data.candidates)) {
+      console.log('Candidates:', data.candidates);
+      
+      for (let i = 0; i < data.candidates.length; i++) {
+        const candidate = data.candidates[i];
+        console.log(`Candidate ${i}:`, candidate);
+        
+        // Проверяем finishReason
+        if (candidate.finishReason) {
+          console.log(`Finish reason: ${candidate.finishReason}`);
+          
+          switch (candidate.finishReason) {
+            case 'SAFETY':
+              console.groupEnd();
+              return {
+                reason: 'SAFETY_BLOCK',
+                message: 'Gemini заблокировал генерацию из-за политики безопасности.\nПопробуйте изменить промпт:\n• Уберите потенциально спорные слова\n• Сделайте описание более нейтральным\n• Попробуйте другую формулировку'
+              };
+              
+            case 'RECITATION':
+              console.groupEnd();
+              return {
+                reason: 'RECITATION_BLOCK', 
+                message: 'Gemini заблокировал генерацию из-за возможного нарушения авторских прав.\nПопробуйте:\n• Убрать упоминания брендов, персонажей\n• Изменить стиль описания\n• Использовать более общие термины'
+              };
+              
+            case 'MAX_TOKENS':
+            case 'STOP':
+              console.groupEnd();
+              return {
+                reason: 'GENERATION_INCOMPLETE',
+                message: 'Gemini не завершил генерацию изображения.\nПопробуйте:\n• Упростить промпт\n• Уменьшить количество деталей\n• Повторить запрос'
+              };
+              
+            default:
+              console.log(`Неизвестная причина: ${candidate.finishReason}`);
+          }
+        }
+        
+        // Проверяем safetyRatings кандидата
+        if (candidate.safetyRatings && Array.isArray(candidate.safetyRatings)) {
+          const blockedRatings = candidate.safetyRatings.filter(rating => 
+            rating.probability === 'HIGH' || rating.probability === 'MEDIUM'
+          );
+          if (blockedRatings.length > 0) {
+            console.log('Заблокированные категории безопасности:', blockedRatings);
+            console.groupEnd();
+            return {
+              reason: 'SAFETY_RATINGS_BLOCK',
+              message: `Контент заблокирован фильтрами безопасности (${blockedRatings.map(r => r.category).join(', ')}).\nПопробуйте более безопасный промпт.`
+            };
+          }
+        }
+      }
+    }
+    
+    // Проверяем promptFeedback (Gemini)
+    if (data.promptFeedback) {
+      console.log('Prompt feedback:', data.promptFeedback);
+      
+      if (data.promptFeedback.blockReason) {
+        console.log(`Промпт заблокирован: ${data.promptFeedback.blockReason}`);
+        console.groupEnd();
+        return {
+          reason: 'PROMPT_BLOCKED',
+          message: `Промпт заблокирован: ${data.promptFeedback.blockReason}.\nИзмените формулировку запроса.`
+        };
+      }
+      
+      if (data.promptFeedback.safetyRatings) {
+        const highRiskRatings = data.promptFeedback.safetyRatings.filter(rating =>
+          rating.probability === 'HIGH'
+        );
+        if (highRiskRatings.length > 0) {
+          console.log('Высокий риск в промпте:', highRiskRatings);
+          console.groupEnd();
+          return {
+            reason: 'PROMPT_SAFETY_HIGH',
+            message: `Промпт содержит потенциально небезопасный контент.\nПопробуйте переформулировать запрос.`
+          };
+        }
+      }
+    }
+    
+    // Проверяем ошибки (общие)
+    if (data.error) {
+      console.log('API Error:', data.error);
+      console.groupEnd();
+      return {
+        reason: 'API_ERROR',
+        message: `Ошибка API: ${data.error.message || 'Неизвестная ошибка'}\nПопробуйте повторить запрос позже.`
+      };
+    }
+    
+    // Проверяем пустые candidates без finishReason
+    if (data.candidates && data.candidates.length === 0) {
+      console.log('Пустой массив candidates');
+      console.groupEnd();
+      return {
+        reason: 'NO_CANDIDATES',
+        message: 'Gemini не смог сгенерировать варианты изображения.\nВозможные причины:\n• Перегрузка системы\n• Технические проблемы\n• Попробуйте через несколько минут'
+      };
+    }
+    
+    // Проверяем OpenRouter специфичные ошибки
+    if (data.choices && Array.isArray(data.choices)) {
+      console.log('OpenRouter response:', data.choices);
+      if (data.choices.length === 0) {
+        console.groupEnd();
+        return {
+          reason: 'OPENROUTER_NO_CHOICES',
+          message: 'OpenRouter не вернул вариантов ответа.\nВозможно временная проблема сервиса.'
+        };
+      }
+    }
+    
+    console.log('Не удалось определить причину пустого ответа');
+    console.groupEnd();
+    
+    // Fallback - общая ошибка
+    return {
+      reason: 'UNKNOWN_EMPTY_RESPONSE',
+      message: 'AI не смог создать изображение по неизвестной причине.\nДетали в консоли браузера (F12).\n\nВозможные решения:\n• Изменить промпт\n• Попробовать позже\n• Проверить подключение к интернету'
+    };
   }
 
   // ===== Server image storage =====
@@ -704,11 +851,7 @@
         }
       }
 
-      if (items.length === 0) {
-        setStatus('AI не смог создать изображение. Попробуйте:\n• Изменить или упростить промпт\n• Убрать слишком специфичные детали\n• Повторить запрос через минуту', 'error');
-      } else {
-        setStatus(`Готово: ${items.length} изображение(й)`);
-      }
+      setStatus(`Готово: ${items.length} изображение(й)`);
       renderResults(items);
     } catch (e) {
       console.error('Generation error:', e);
