@@ -81,9 +81,58 @@
   /**
    * Утилита статуса
    */
-  function setStatus(text, kind) {
-    statusEl.textContent = text || '';
+  function setStatus(text, kind, details = null) {
+    statusEl.innerHTML = ''; // Очищаем содержимое
     statusEl.style.color = kind === 'error' ? '#ff9b9b' : '#a7b0c0';
+    
+    if (!text) return;
+    
+    const messageSpan = document.createElement('span');
+    messageSpan.textContent = text;
+    statusEl.appendChild(messageSpan);
+    
+    // Если есть детали ошибки, добавляем кнопку для их просмотра
+    if (kind === 'error' && details) {
+      const detailsBtn = document.createElement('button');
+      detailsBtn.type = 'button';
+      detailsBtn.textContent = 'Детали';
+      detailsBtn.className = 'error-details-btn';
+      detailsBtn.style.cssText = `
+        margin-left: 8px; 
+        padding: 2px 8px; 
+        font-size: 11px; 
+        background: rgba(255,155,155,0.2); 
+        border: 1px solid rgba(255,155,155,0.4); 
+        border-radius: 4px; 
+        color: #ff9b9b; 
+        cursor: pointer;
+      `;
+      detailsBtn.addEventListener('click', () => showErrorDetails(details));
+      statusEl.appendChild(detailsBtn);
+    }
+  }
+
+  /**
+   * Показывает детали ошибки в alert или консоли
+   */
+  function showErrorDetails(errorDetails) {
+    console.group('🔴 Детали ошибки API:');
+    console.error('Статус:', errorDetails.status, errorDetails.statusText);
+    if (errorDetails.message) console.error('Сообщение:', errorDetails.message);
+    if (errorDetails.serverError) console.error('Ошибка сервера:', errorDetails.serverError);
+    if (errorDetails.upstream) console.error('Ошибка провайдера:', errorDetails.upstream);
+    if (errorDetails.raw) console.error('Сырой ответ:', errorDetails.raw);
+    console.groupEnd();
+    
+    // Также показываем в alert для пользователя
+    let alertText = `Ошибка API (${errorDetails.status})\n\n`;
+    alertText += `Сообщение: ${errorDetails.message}\n`;
+    if (errorDetails.upstream) {
+      alertText += `\nОшибка провайдера: ${JSON.stringify(errorDetails.upstream, null, 2)}\n`;
+    }
+    alertText += '\nПодробности в консоли браузера (F12)';
+    
+    alert(alertText);
   }
 
   /**
@@ -261,11 +310,45 @@
       body: form,
     });
     if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      throw new Error(text || `Ошибка ${resp.status}`);
+      let errorInfo = { status: resp.status, statusText: resp.statusText };
+      try {
+        const text = await resp.text();
+        // Попробуем распарсить JSON ошибку от сервера
+        try {
+          const errorData = JSON.parse(text);
+          errorInfo.serverError = errorData;
+          errorInfo.message = errorData.error || text;
+          if (errorData.upstream) errorInfo.upstream = errorData.upstream;
+          if (errorData.raw) errorInfo.raw = errorData.raw;
+        } catch (_) {
+          errorInfo.message = text || `HTTP ${resp.status}`;
+        }
+      } catch (_) {
+        errorInfo.message = `HTTP ${resp.status} ${resp.statusText}`;
+      }
+      
+      // Логируем детали в консоль для разработчиков
+      console.error('API Error:', errorInfo);
+      
+      const error = new Error(errorInfo.message);
+      error.details = errorInfo;
+      throw error;
     }
     /** @type {{ results: { mimeType: string, b64: string, filename: string }[] }} */
     const data = await resp.json();
+    
+    // Логирование для диагностики
+    console.log('API Response:', {
+      status: resp.status,
+      resultsCount: data.results ? data.results.length : 0,
+      hasResults: !!(data.results && data.results.length > 0),
+      responseData: data
+    });
+    
+    if (!data.results || data.results.length === 0) {
+      console.warn('⚠️ API вернул пустой результат:', data);
+    }
+    
     return data.results || [];
   }
 
@@ -485,10 +568,17 @@
         }
       }
 
-      setStatus(`Готово: ${items.length} изображение(й)`);
+      if (items.length === 0) {
+        setStatus('⚠️ Запрос выполнен, но результаты не получены. Проверьте консоль (F12) для диагностики.', 'error');
+      } else {
+        setStatus(`Готово: ${items.length} изображение(й)`);
+      }
       renderResults(items);
     } catch (e) {
-      setStatus(e && e.message ? e.message : 'Ошибка выполнения', 'error');
+      console.error('Generation error:', e);
+      const message = e && e.message ? e.message : 'Ошибка выполнения';
+      const details = e && e.details ? e.details : null;
+      setStatus(message, 'error', details);
     } finally {
       runBtn.disabled = false; 
       showRunProgress(false);
