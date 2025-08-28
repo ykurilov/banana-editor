@@ -54,6 +54,9 @@
   
   /** Управление сессией для серверного хранения */
   let currentSessionId = localStorage.getItem('currentSessionId') || null;
+  
+  /** localStorage ключи */
+  const LS_LAST_PROMPT_KEY = 'lastPrompt_v1';
 
   /**
    * Форматирует байты в читаемый размер
@@ -309,6 +312,9 @@
     // Начинаем новую сессию на сервере
     currentSessionId = null;
     localStorage.removeItem('currentSessionId');
+    
+    // Очищаем сохраненный промпт
+    clearLastPrompt();
   });
 
   /**
@@ -989,19 +995,96 @@
   // Initial render
   renderSavedList();
   
+  // ===== Prompt persistence =====
+  
+  /**
+   * Сохраняет текущий промпт в localStorage
+   */
+  function saveLastPrompt() {
+    const prompt = promptInput.value.trim();
+    if (prompt) {
+      try {
+        localStorage.setItem(LS_LAST_PROMPT_KEY, prompt);
+      } catch (e) {
+        console.warn('Failed to save prompt to localStorage:', e);
+      }
+    }
+  }
+  
+  /**
+   * Загружает последний промпт из localStorage
+   */
+  function loadLastPrompt() {
+    try {
+      const saved = localStorage.getItem(LS_LAST_PROMPT_KEY);
+      return saved || '';
+    } catch (e) {
+      console.warn('Failed to load prompt from localStorage:', e);
+      return '';
+    }
+  }
+  
+  /**
+   * Очищает сохраненный промпт
+   */
+  function clearLastPrompt() {
+    try {
+      localStorage.removeItem(LS_LAST_PROMPT_KEY);
+    } catch (e) {
+      console.warn('Failed to clear saved prompt:', e);
+    }
+  }
+  
+  // Auto-save prompt as user types
+  if (promptInput) {
+    // Debounced save - сохраняем не чаще раза в секунду
+    let savePromptTimeout = null;
+    const debouncedSavePrompt = () => {
+      if (savePromptTimeout) clearTimeout(savePromptTimeout);
+      savePromptTimeout = setTimeout(() => {
+        saveLastPrompt();
+      }, 1000);
+    };
+    
+    promptInput.addEventListener('input', debouncedSavePrompt);
+    promptInput.addEventListener('blur', () => {
+      // Сохраняем сразу при потере фокуса
+      if (savePromptTimeout) clearTimeout(savePromptTimeout);
+      saveLastPrompt();
+    });
+  }
+  
   // ===== Auto-restore images on page load =====
   (async function initializeApp() {
     try {
+      // Восстанавливаем изображения
       const restoredFiles = await loadImagesFromServer();
       if (restoredFiles.length > 0) {
         currentFiles = restoredFiles;
         void renderInputPreview(currentFiles);
-        
-        setStatus(`✨ Восстановлено ${restoredFiles.length} изображение(й) из предыдущей сессии`);
+      }
+      
+      // Восстанавливаем промпт
+      const savedPrompt = loadLastPrompt();
+      if (savedPrompt) {
+        promptInput.value = savedPrompt;
+      }
+      
+      // Показываем уведомление о восстановленных данных
+      const messages = [];
+      if (restoredFiles.length > 0) {
+        messages.push(`${restoredFiles.length} изображение(й)`);
+      }
+      if (savedPrompt) {
+        messages.push('промпт');
+      }
+      
+      if (messages.length > 0) {
+        setStatus(`✨ Восстановлено: ${messages.join(' и ')}`);
         setTimeout(() => setStatus(''), 3000);
       }
     } catch (e) {
-      console.warn('Failed to restore images:', e);
+      console.warn('Failed to restore session data:', e);
     }
   })();
 })();
