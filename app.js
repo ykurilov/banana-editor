@@ -337,6 +337,13 @@
    * @param {string} canvasRatio
    */
   async function callEditApi(files, prompt, textOnly, canvasRatio) {
+    console.log('🚀 Начинаем API запрос:', { 
+      filesCount: files.length, 
+      promptLength: prompt.length, 
+      textOnly, 
+      canvasRatio 
+    });
+    
     const form = new FormData();
     let finalPrompt = prompt;
     
@@ -403,11 +410,20 @@
       responseData: data
     });
     
-    if (!data.results || data.results.length === 0) {
-      console.warn('⚠️ API вернул пустой результат:', data);
+    // Проверяем на пустой результат
+    const hasResults = data.results && Array.isArray(data.results) && data.results.length > 0;
+    if (!hasResults) {
+      console.warn('⚠️ API вернул пустой результат:', {
+        hasResultsField: !!data.results,
+        isResultsArray: Array.isArray(data.results),
+        resultsLength: data.results ? data.results.length : 'N/A',
+        fullResponse: data
+      });
       
       // Детальная диагностика пустого ответа
       const diagnosis = diagnosePoorResponse(data);
+      console.error('🔍 Результат диагностики:', diagnosis);
+      
       const error = new Error(diagnosis.message);
       error.details = { 
         status: resp.status, 
@@ -610,6 +626,16 @@
       return {
         reason: 'NO_CANDIDATES',
         message: 'Gemini не смог сгенерировать варианты изображения.\nВозможные причины:\n• Перегрузка системы\n• Технические проблемы\n• Попробуйте через несколько минут'
+      };
+    }
+    
+    // Проверяем случай когда data.results существует но пустой
+    if (data.results && Array.isArray(data.results) && data.results.length === 0) {
+      console.log('Поле results существует, но пустое');
+      console.groupEnd();
+      return {
+        reason: 'EMPTY_RESULTS_ARRAY',
+        message: 'Сервер вернул пустой список результатов.\nВозможные причины:\n• Временная перегрузка AI модели\n• Промпт не прошел внутренние фильтры\n• Попробуйте изменить промпт или повторить позже'
       };
     }
     
@@ -849,15 +875,51 @@
       } else if (runParallel) {
         const tasks = Array.from({ length: want }, () => callEditApi(files, prompt, textOnly, canvasRatio));
         const all = await Promise.allSettled(tasks);
-        items = all.flatMap((r) => r.status === 'fulfilled' ? r.value : []);
-      } else {
-        for (let i = 0; i < want; i += 1) {
-          const res = await callEditApi(files, prompt, textOnly, canvasRatio);
-          items = items.concat(res);
+        
+        // Детальная диагностика параллельных запросов
+        let successCount = 0;
+        let errorCount = 0;
+        for (let i = 0; i < all.length; i++) {
+          const result = all[i];
+          if (result.status === 'fulfilled') {
+            successCount++;
+            items = items.concat(result.value);
+            if (result.value.length === 0) {
+              console.warn(`⚠️ Параллельный запрос ${i + 1} вернул пустой результат`);
+            }
+          } else {
+            errorCount++;
+            console.error(`❌ Параллельный запрос ${i + 1} завершился ошибкой:`, result.reason);
+          }
         }
+        
+        console.log(`📊 Параллельные запросы: ${successCount} успешных, ${errorCount} с ошибками, ${items.length} изображений получено`);
+      } else {
+        // Последовательные запросы с диагностикой
+        for (let i = 0; i < want; i += 1) {
+          try {
+            console.log(`🔄 Последовательный запрос ${i + 1} из ${want}`);
+            const res = await callEditApi(files, prompt, textOnly, canvasRatio);
+            items = items.concat(res);
+            if (res.length === 0) {
+              console.warn(`⚠️ Последовательный запрос ${i + 1} вернул пустой результат`);
+            }
+          } catch (e) {
+            console.error(`❌ Последовательный запрос ${i + 1} завершился ошибкой:`, e);
+            // Не прерываем цикл, продолжаем с следующим запросом
+          }
+        }
+        console.log(`📊 Последовательные запросы завершены: ${items.length} изображений получено`);
       }
 
-      setStatus(`Готово: ${items.length} изображение(й)`);
+      // Проверяем результат перед отображением
+      if (items.length === 0) {
+        // Если дошли сюда с пустым результатом, значит диагностика не сработала
+        setStatus('AI не вернул изображения. Возможные причины:\n• Перегрузка сервиса (попробуйте позже)\n• Контент заблокирован фильтрами\n• Временные проблемы у провайдера\n\nДетали в консоли (F12)', 'error');
+        console.warn('⚠️ Получен пустой результат без диагностики. Это не должно происходить.');
+      } else {
+        setStatus(`Готово: ${items.length} изображение(й)`);
+      }
       renderResults(items);
     } catch (e) {
       console.error('Generation error:', e);
