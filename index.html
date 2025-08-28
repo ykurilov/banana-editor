@@ -7,10 +7,7 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header class="app-header">
-      <h1>Редактирование изображений по запросу</h1>
-      <p class="subtitle">Модель: Gemini-2.5-flash-image-preview</p>
-    </header>
+    
 
     <main class="container">
       <section class="panel">
@@ -30,16 +27,6 @@
           <textarea id="prompt" rows="3" placeholder="Опишите, как изменить изображение (например: 'Сделай небо ярче и добавь радугу')."></textarea>
         </div>
 
-        <details id="settings" class="settings">
-          <summary>Настройки</summary>
-          <div class="settings-row">
-            <label for="apiBase">Адрес API (без завершающего /)</label>
-            <input id="apiBase" type="url" placeholder="https://your-server.example" />
-            <button id="saveSettingsBtn" class="secondary" type="button">Сохранить</button>
-          </div>
-          <small class="hint">Если оставить пустым — будет использован текущий домен. Путь: /api/edit</small>
-        </details>
-
         <details id="savedPrompts" class="saved-prompts">
           <summary>Сохранённые промпты</summary>
           <div class="saved-toolbar">
@@ -52,8 +39,31 @@
         <div class="actions">
           <button id="runBtn" class="primary">Запустить</button>
           <label class="chk">
+            <span>Кол-во</span>
+            <select id="outCount">
+              <option value="1" selected>1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </label>
+          <label class="chk">
             <input id="textOnly" type="checkbox" />
             <span>Только по тексту</span>
+          </label>
+          <label class="chk">
+            <span>Разрешение</span>
+            <select id="canvasRatio">
+              <option value="" selected>Авто</option>
+              <option value="16х9">16:9</option>
+              <option value="9х16">9:16</option>
+              <option value="4х3">4:3</option>
+              <option value="3х4">3:4</option>
+            </select>
+          </label>
+          <label class="chk">
+            <input id="parallelReq" type="checkbox" checked />
+            <span>Параллельно</span>
           </label>
           <button id="clearBtn" class="secondary">Очистить</button>
         </div>
@@ -73,13 +83,17 @@
 
     <div id="lightbox" class="lightbox" aria-hidden="true">
       <div class="lightbox-toolbar">
+        <button data-action="prev" title="Предыдущее">⟨</button>
         <button data-action="zoom-in" title="Увеличить">+</button>
         <button data-action="zoom-out" title="Уменьшить">−</button>
         <button data-action="reset" title="Сброс">⟲</button>
+        <button data-action="next" title="Следующее">⟩</button>
         <button data-action="close" title="Закрыть">✕</button>
       </div>
       <div class="lightbox-stage">
         <img id="lightboxImg" alt="Предпросмотр" />
+        <button class="lb-side lb-left" data-action="prev" aria-label="Предыдущее">⟨</button>
+        <button class="lb-side lb-right" data-action="next" aria-label="Следующее">⟩</button>
       </div>
     </div>
 

@@ -22,11 +22,19 @@
   /** @type {HTMLDivElement} */
   const lightboxToolbar = document.querySelector('#lightbox .lightbox-toolbar');
   /** @type {HTMLDivElement} */
+  const lightboxStage = document.querySelector('#lightbox .lightbox-stage');
+  /** @type {HTMLDivElement} */
   const overlay = document.getElementById('overlay');
   /** @type {HTMLDivElement} */
   const dropzone = document.getElementById('dropzone');
   /** @type {HTMLInputElement} */
   const textOnlyChk = document.getElementById('textOnly');
+  /** @type {HTMLSelectElement} */
+  const outCountSel = document.getElementById('outCount');
+  /** @type {HTMLInputElement} */
+  const parallelReqChk = document.getElementById('parallelReq');
+  /** @type {HTMLSelectElement} */
+  const canvasRatioSel = document.getElementById('canvasRatio');
   /** Saved prompts UI */
   const savePromptBtn = document.getElementById('savePromptBtn');
   const clearPromptsBtn = document.getElementById('clearPromptsBtn');
@@ -201,19 +209,50 @@
   });
 
   /**
+   * Загружает холст по имени файла
+   * @param {string} filename
+   * @returns {Promise<File>}
+   */
+  async function loadCanvasFile(filename) {
+    const response = await fetch(`./canvas/${filename}`);
+    if (!response.ok) throw new Error(`Не удалось загрузить холст: ${filename}`);
+    const blob = await response.blob();
+    return new File([blob], filename, { type: blob.type || 'image/png' });
+  }
+
+  /**
    * Вызов серверного API /api/edit
    * @param {File[]} files
    * @param {string} prompt
+   * @param {boolean} textOnly
+   * @param {string} canvasRatio
    */
-  async function callEditApi(files, prompt, textOnly) {
+  async function callEditApi(files, prompt, textOnly, canvasRatio) {
     const form = new FormData();
+    let finalPrompt = prompt;
+    
+    // Добавляем пользовательские изображения
     if (!textOnly) {
       files.forEach((f) => form.append('images', f, f.name));
     }
-    form.append('prompt', prompt);
-    form.append('textOnly', textOnly ? '1' : '0');
+    
+    // Если выбрано разрешение — добавляем холст
+    if (canvasRatio) {
+      try {
+        const canvasFile = await loadCanvasFile(`${canvasRatio}.png`);
+        form.append('images', canvasFile, canvasFile.name);
+        finalPrompt += ' Размер и соотношение как у приложенного пустого изображения.';
+      } catch (e) {
+        console.warn('Не удалось загрузить холст:', e);
+      }
+    }
+    
+    // textOnly только если нет ни пользовательских файлов, ни холста
+    const hasImages = (!textOnly && files.length > 0) || canvasRatio;
+    form.append('textOnly', hasImages ? '0' : '1');
+    form.append('prompt', finalPrompt);
 
-    const base = loadApiBase();
+    const base = getApiBaseEffective();
     const url = (base ? `${base.replace(/\/$/, '')}` : '') + '/api/edit';
     const resp = await fetch(url, {
       method: 'POST',
@@ -231,28 +270,27 @@
   function renderResults(items) {
     results.innerHTML = '';
     if (!items || items.length === 0) return;
+    /** @type {string[]} */
+    const dataUrls = [];
     items.forEach((it, idx) => {
       const wrapper = document.createElement('div');
       wrapper.className = 'thumb';
       const img = document.createElement('img');
       img.alt = `Результат ${idx + 1}`;
-      img.src = `data:${it.mimeType};base64,${it.b64}`;
+      const dataUrl = `data:${it.mimeType};base64,${it.b64}`;
+      dataUrls.push(dataUrl);
+      img.src = dataUrl;
       img.style.cursor = 'zoom-in';
       img.addEventListener('click', () => {
         if (!lightbox || !lightboxImg) return;
-        lightboxImg.src = img.src;
-        lightbox.setAttribute('aria-hidden', 'false');
-        currentZoom = 1; offsetX = 0; offsetY = 0; applyTransform();
+        openLightboxAt(idx);
       });
-      const a = document.createElement('a');
-      a.className = 'dl';
-      a.download = it.filename || `result_${idx + 1}.png`;
-      a.href = img.src;
-      a.textContent = 'Скачать';
       wrapper.appendChild(img);
-      wrapper.appendChild(a);
       results.appendChild(wrapper);
     });
+
+    // сохранить список для навигации
+    lightboxImages = dataUrls;
   }
 
   function closeLightbox() {
@@ -260,13 +298,37 @@
     lightbox.setAttribute('aria-hidden', 'true');
     if (lightboxImg) lightboxImg.src = '';
   }
+  function openLightboxAt(index) {
+    if (!lightbox || !lightboxImg || !lightboxImages.length) return;
+    currentIndex = Math.max(0, Math.min(lightboxImages.length - 1, index));
+    lightboxImg.src = lightboxImages[currentIndex];
+    lightbox.setAttribute('aria-hidden', 'false');
+    currentZoom = 1; offsetX = 0; offsetY = 0; applyTransform();
+  }
+  function showNext(delta) {
+    if (!lightboxImages.length) return;
+    const next = (currentIndex + delta + lightboxImages.length) % lightboxImages.length;
+    openLightboxAt(next);
+  }
   if (lightbox) {
     lightbox.addEventListener('click', (e) => {
       if (e.target === lightbox) closeLightbox();
     });
   }
   window.addEventListener('keydown', (e) => {
+    // Не перехватываем стрелки при вводе текста / с модификаторами
+    const target = /** @type {HTMLElement} */ (e.target);
+    const isEditable = target && (
+      target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable
+    );
+    if (isEditable || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+
     if (e.key === 'Escape') closeLightbox();
+    // Навигация стрелками только когда лайтбокс открыт
+    const isOpen = lightbox && lightbox.getAttribute('aria-hidden') === 'false';
+    if (!isOpen) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); showNext(1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); showNext(-1); }
   });
 
   // Loading overlay helpers
@@ -300,10 +362,25 @@
       if (action === 'zoom-in') zoomIn();
       else if (action === 'zoom-out') zoomOut();
       else if (action === 'reset') resetZoom();
+      else if (action === 'next') showNext(1);
+      else if (action === 'prev') showNext(-1);
       else if (action === 'close') closeLightbox();
     });
   }
 
+  // Side arrows inside stage (prev/next)
+  if (lightboxStage) {
+    lightboxStage.addEventListener('click', (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      if (action === 'next') showNext(1);
+      else if (action === 'prev') showNext(-1);
+    });
+  }
+
+  /** @type {string[]} */ let lightboxImages = [];
+  /** @type {number} */ let currentIndex = 0;
   if (lightboxImg) {
     lightboxImg.addEventListener('mousedown', (e) => {
       if (currentZoom <= 1) return;
@@ -319,11 +396,54 @@
       e.preventDefault();
       if (e.deltaY < 0) zoomIn(); else zoomOut();
     }, { passive: false });
+
+    // Touch gestures: pinch-zoom and pan + swipe nav
+    /** @type {number} */ let startDist = 0;
+    /** @type {number} */ let pinchStartZoom = 1;
+    function dist(t1, t2) { const dx = t1.clientX - t2.clientX; const dy = t1.clientY - t2.clientY; return Math.hypot(dx, dy); }
+    /** @type {number} */ let swipeStartX = 0;
+    /** @type {number} */ let swipeStartY = 0;
+    lightboxImg.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        swipeStartX = e.touches[0].clientX; swipeStartY = e.touches[0].clientY;
+        if (currentZoom > 1) { isPanning = true; startX = e.touches[0].clientX - offsetX; startY = e.touches[0].clientY - offsetY; }
+      } else if (e.touches.length === 2) {
+        e.preventDefault();
+        startDist = dist(e.touches[0], e.touches[1]);
+        pinchStartZoom = currentZoom;
+      }
+    }, { passive: false });
+    lightboxImg.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1 && isPanning) {
+        offsetX = e.touches[0].clientX - startX; offsetY = e.touches[0].clientY - startY; applyTransform();
+      } else if (e.touches.length === 2) {
+        e.preventDefault();
+        const d = dist(e.touches[0], e.touches[1]);
+        const scale = d / Math.max(1, startDist);
+        currentZoom = Math.min(6, Math.max(1, pinchStartZoom * scale));
+        applyTransform();
+      }
+    }, { passive: false });
+    lightboxImg.addEventListener('touchend', (e) => {
+      if (!isPanning && e.changedTouches && e.changedTouches.length === 1) {
+        const dx = e.changedTouches[0].clientX - swipeStartX;
+        const dy = e.changedTouches[0].clientY - swipeStartY;
+        if (Math.abs(dx) > 40 && Math.abs(dy) < 60) {
+          if (dx < 0) showNext(1); else showNext(-1);
+        }
+      }
+      isPanning = false;
+    }, { passive: true });
   }
 
   runBtn.addEventListener('click', async () => {
     try {
       const textOnly = !!(textOnlyChk && textOnlyChk.checked);
+      const wantRaw = Number(outCountSel && outCountSel.value ? outCountSel.value : 1);
+      const want = Math.max(1, Math.min(4, Number.isFinite(wantRaw) ? wantRaw : 1));
+      const runParallel = !!(parallelReqChk && parallelReqChk.checked);
+      const canvasRatio = String(canvasRatioSel && canvasRatioSel.value || '').trim();
+
       let files = [];
       if (!textOnly) {
         if (selectedIndices.size > 0) {
@@ -336,9 +456,24 @@
       const prompt = String(promptInput.value || '').trim();
       if (!textOnly && files.length === 0) { setStatus('Загрузите хотя бы одно изображение или включите "Только по тексту"', 'error'); return; }
       if (!prompt) { setStatus('Введите текстовый запрос', 'error'); return; }
+
       runBtn.disabled = true; clearBtn.disabled = true;
       setStatus('Отправляю запрос...'); showOverlay(true);
-      const items = await callEditApi(files, prompt, textOnly);
+
+      let items = [];
+      if (want === 1) {
+        items = await callEditApi(files, prompt, textOnly, canvasRatio);
+      } else if (runParallel) {
+        const tasks = Array.from({ length: want }, () => callEditApi(files, prompt, textOnly, canvasRatio));
+        const all = await Promise.allSettled(tasks);
+        items = all.flatMap((r) => r.status === 'fulfilled' ? r.value : []);
+      } else {
+        for (let i = 0; i < want; i += 1) {
+          const res = await callEditApi(files, prompt, textOnly, canvasRatio);
+          items = items.concat(res);
+        }
+      }
+
       setStatus(`Готово: ${items.length} изображение(й)`);
       renderResults(items);
     } catch (e) {
@@ -350,6 +485,15 @@
 
   // ===== Saved Prompts (localStorage) =====
   const LS_SETTINGS_KEY = 'settings_v1';
+  // Укажи тут базовый адрес API (например, "https://your-service.onrender.com")
+  const DEFAULT_API_BASE = '';
+  function readApiParam() {
+    try {
+      const u = new URL(window.location.href);
+      const val = u.searchParams.get('api');
+      return val ? String(val).trim() : '';
+    } catch (_) { return ''; }
+  }
   function loadApiBase() {
     try {
       const raw = localStorage.getItem(LS_SETTINGS_KEY);
@@ -362,8 +506,17 @@
     const v = String(value || '').trim();
     try { localStorage.setItem(LS_SETTINGS_KEY, JSON.stringify({ apiBase: v })); } catch (_) {}
   }
+  function getApiBaseEffective() {
+    // Приоритет: ?api= → localStorage → DEFAULT → текущий домен
+    const p = readApiParam();
+    if (p) { try { saveApiBase(p); } catch (_) {} return p; }
+    const stored = loadApiBase();
+    if (stored) return stored;
+    if (DEFAULT_API_BASE) return DEFAULT_API_BASE;
+    return '';
+  }
   if (apiBaseInput) {
-    const cur = loadApiBase();
+    const cur = getApiBaseEffective();
     if (cur) apiBaseInput.value = cur;
   }
   if (saveSettingsBtn) {
