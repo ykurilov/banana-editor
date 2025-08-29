@@ -358,7 +358,7 @@
       try {
         const canvasFile = await loadCanvasFile(`${canvasRatio}.png`);
         form.append('images', canvasFile, canvasFile.name);
-        finalPrompt += ' Размер и соотношение как у приложенного пустого изображения.';
+        finalPrompt += 'Соотношение сторон как у приложенного пустого изображения. Изображение должно заполнять пространство полностью. Не должно быть черных полей.';
       } catch (e) {
         console.warn('Не удалось загрузить холст:', e);
       }

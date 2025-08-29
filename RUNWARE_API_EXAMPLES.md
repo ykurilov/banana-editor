@@ -1,211 +1,401 @@
-# Runware API - Примеры запросов и ответов
+# Runware API - Документация и примеры
 
-Документация для интеграции с Runware AI API для генерации изображений.
+Документация по интеграции с Runware API для генерации изображений, с примерами из нашего проекта.
 
-## 🔑 Базовая информация
+## Конфигурация
 
-- **Endpoint:** `https://api.runware.ai/v1/image/generate`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Authorization:** `Bearer YOUR_API_KEY`
-
-## 📤 Примеры запросов (Payload)
-
-### 1. Text-to-Image (Генерация из текста)
-
-```json
-[
-  {
-    "taskType": "imageInference",
-    "numberResults": 2,
-    "outputFormat": "JPEG",
-    "includeCost": true,
-    "outputType": ["URL"],
-    "model": "google:4@1",
-    "positivePrompt": "Beautiful sunset over mountains, photorealistic",
-    "taskUUID": "550e8400-e29b-41d4-a716-446655440000"
-  }
-]
+```javascript
+const RUNWARE_API_KEY = process.env.RUNWARE_API_KEY;
+const RUNWARE_RESULTS_COUNT = Number(process.env.RUNWARE_RESULTS_COUNT || 2);
+const RUNWARE_TIMEOUT_MS = Number(process.env.RUNWARE_TIMEOUT_MS || 45000);
 ```
 
-### 2. Image-to-Image (С референсными изображениями)
+## Endpoint
 
-```json
-[
-  {
-    "taskType": "imageInference",
-    "numberResults": 4,
-    "outputFormat": "JPEG",
-    "includeCost": true,
-    "outputType": ["URL"],
-    "referenceImages": [
-      "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD...",
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA..."
-    ],
-    "model": "google:4@1",
-    "positivePrompt": "Превратить в стиль акварельной живописи с яркими цветами",
-    "taskUUID": "550e8400-e29b-41d4-a716-446655440001"
-  }
-]
+```
+POST https://api.runware.ai/v1/image/generate
 ```
 
-## 📥 Примеры ответов
+## Headers
 
-### ✅ Успешный ответ
+```javascript
+const headers = {
+  'authorization': `Bearer ${apiKey}`,
+  'content-type': 'application/json; charset=utf-8',
+  'accept': 'application/json'
+}
+```
+
+## 1. Text-to-Image запрос
+
+### Payload (без референсных изображений)
+
+```json
+[{
+  "taskType": "imageInference",
+  "numberResults": 2,
+  "outputFormat": "JPEG", 
+  "includeCost": true,
+  "outputType": ["URL"],
+  "model": "google:4@1",
+  "positivePrompt": "beautiful sunset over mountains",
+  "taskUUID": "550e8400-e29b-41d4-a716-446655440000"
+}]
+```
+
+### Пример из проекта:
+
+```javascript
+function requestRunwareGenerate({ apiKey, prompt, images, resultsCount = 2 }) {
+  const taskUUID = generateTaskUUID(); // crypto.randomUUID()
+  
+  const payload = [{
+    taskType: "imageInference",
+    numberResults: resultsCount,
+    outputFormat: "JPEG", 
+    includeCost: true,
+    outputType: ["URL"],
+    model: "google:4@1",
+    positivePrompt: prompt,
+    taskUUID: taskUUID
+  }];
+  
+  // Добавляем referenceImages только если есть изображения
+  if (images && images.length > 0) {
+    const referenceImages = images.map(img => `data:${img.mimeType};base64,${img.base64}`);
+    payload[0].referenceImages = referenceImages;
+  }
+  
+  // ... HTTP запрос
+}
+```
+
+## 2. Image-to-Image запрос (с референсными изображениями)
+
+### Payload
+
+```json
+[{
+  "taskType": "imageInference",
+  "numberResults": 2,
+  "outputFormat": "JPEG",
+  "includeCost": true,
+  "outputType": ["URL"],
+  "model": "google:4@1", 
+  "positivePrompt": "make the sky brighter and add rainbow",
+  "taskUUID": "550e8400-e29b-41d4-a716-446655440001",
+  "referenceImages": [
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEA...",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+  ]
+}]
+```
+
+### Подготовка изображений в проекте:
+
+```javascript
+// Конвертация File объектов в base64 для API
+const images = files.map((f, idx) => ({
+  mimeType: f.mimeType.startsWith('image/') ? f.mimeType : 'image/png',
+  base64: f.data.toString('base64'),
+  filename: f.filename || `image_${idx + 1}`
+}));
+
+// Формирование referenceImages для API
+const referenceImages = images.map(img => `data:${img.mimeType};base64,${img.base64}`);
+```
+
+## 3. Успешный ответ от Runware
+
+### Структура ответа:
 
 ```json
 {
   "data": [
     {
-      "taskType": "imageInference",
-      "imageUUID": "b417baea-992a-4b3c-838c-07980d06a0fb",
       "taskUUID": "550e8400-e29b-41d4-a716-446655440000",
-      "cost": 0.0273,
-      "seed": 709596153,
-      "imageURL": "https://im.runware.ai/image/ws/2/ii/b417baea-992a-4b3c-838c-07980d06a0fb.jpg"
+      "imageUUID": "123e4567-e89b-12d3-a456-426614174000", 
+      "imageURL": "https://im.runware.ai/image/ws/0.25/ii/123e4567-e89b-12d3-a456-426614174000.jpg",
+      "cost": 0.25,
+      "seed": 1234567890
     },
     {
-      "taskType": "imageInference", 
-      "imageUUID": "8c321754-af9b-4624-a502-c2e7958ca9af",
       "taskUUID": "550e8400-e29b-41d4-a716-446655440000",
-      "cost": 0.0273,
-      "seed": 709596154,
-      "imageURL": "https://im.runware.ai/image/ws/2/ii/8c321754-af9b-4624-a502-c2e7958ca9af.jpg"
+      "imageUUID": "456e7890-e89b-12d3-a456-426614174001",
+      "imageURL": "https://im.runware.ai/image/ws/0.25/ii/456e7890-e89b-12d3-a456-426614174001.jpg", 
+      "cost": 0.25,
+      "seed": 9876543210
     }
   ]
 }
 ```
 
-### ❌ Ответ с ошибкой
+### Обработка результатов в проекте:
+
+```javascript
+// Извлечение результатов из ответа Runware
+if (json.data && Array.isArray(json.data) && json.data.length > 0) {
+  json.data.forEach((item, index) => {
+    if (item && item.imageURL) {
+      results.push({ 
+        mimeType: 'image/jpeg', 
+        imageURL: item.imageURL,      // Готовый URL изображения
+        imageUUID: item.imageUUID,    // UUID изображения
+        cost: item.cost,              // Стоимость генерации
+        seed: item.seed,              // Seed для воспроизведения
+        filename: `runware_result_${index + 1}.jpg` 
+      });
+    }
+  });
+}
+```
+
+## 4. Ошибки от Runware
+
+### Структура ошибки:
 
 ```json
 {
-  "data": [],
   "errors": [
     {
-      "code": "invalidReferenceImages",
-      "message": "Invalid value for 'referenceImages' parameter. Reference images must be an array of strings, where each image must be specified in one of the following formats: a UUID v4 string of a previously uploaded or generated image, a data URI string, a base64 encoded image, or a publicly accessible URL. Supported formats are: PNG, JPG, and WEBP.",
-      "parameter": "referenceImages",
-      "type": "string[]",
-      "documentation": "https://runware.ai/docs/en/image-inference/api-reference#request-referenceimages",
-      "taskUUID": "550e8400-e29b-41d4-a716-446655440000"
+      "code": "INSUFFICIENT_CREDITS",
+      "message": "Insufficient credits to complete the request"
     }
   ]
 }
 ```
 
-## 📋 Описание параметров
-
-### Обязательные параметры
-
-| Параметр | Тип | Описание |
-|----------|-----|----------|
-| `taskType` | string | Всегда `"imageInference"` |
-| `positivePrompt` | string | Текстовое описание желаемого изображения |
-| `taskUUID` | string | Уникальный UUID v4 для отслеживания задачи |
-| `model` | string | Модель AI (рекомендуется `"google:4@1"`) |
-
-### Опциональные параметры
-
-| Параметр | Тип | По умолчанию | Описание |
-|----------|-----|--------------|----------|
-| `numberResults` | number | 1 | Количество генерируемых изображений (1-4) |
-| `outputFormat` | string | "PNG" | Формат выходного файла ("PNG", "JPEG") |
-| `outputType` | string[] | ["URL"] | Тип вывода (["URL"], ["dataURI"]) |
-| `includeCost` | boolean | false | Включать стоимость в ответ |
-| `referenceImages` | string[] | - | Массив изображений для image-to-image |
-
-## 🎯 Модели
-
-| Модель | Описание |
-|--------|----------|
-| `google:4@1` | Google Imagen - высокое качество, фотореализм |
-| `bfl:5@1` | FLUX.1 Pro - художественный стиль |
-
-## 💰 Стоимость
-
-- **Google Imagen:** ~$0.027 за изображение
-- **Время генерации:** 7-15 секунд (text-to-image), 30-120 секунд (image-to-image)
-
-## ⚡ Важные особенности
-
-### 1. Text-to-Image
-- **НЕ включать** параметр `referenceImages` вообще
-- Быстрая генерация (7-15 секунд)
-
-### 2. Image-to-Image  
-- **Обязательно включать** `referenceImages` с массивом изображений
-- Поддерживаемые форматы: PNG, JPG, WEBP
-- Изображения передаваются как data URI: `data:image/jpeg;base64,...`
-- Медленная генерация (30-120 секунд)
-
-### 3. UUID Generation
-```javascript
-// JavaScript
-const taskUUID = crypto.randomUUID();
-
-// Python
-import uuid
-task_uuid = str(uuid.uuid4())
-```
-
-## 🔧 Пример интеграции (JavaScript)
-
-```javascript
-async function generateWithRunware(prompt, referenceImages = [], count = 1) {
-  const payload = [{
-    taskType: "imageInference",
-    numberResults: count,
-    outputFormat: "JPEG",
-    includeCost: true,
-    outputType: ["URL"],
-    model: "google:4@1",
-    positivePrompt: prompt,
-    taskUUID: crypto.randomUUID()
-  }];
-  
-  // Добавляем референсные изображения только если есть
-  if (referenceImages.length > 0) {
-    payload[0].referenceImages = referenceImages;
-  }
-  
-  const response = await fetch('https://api.runware.ai/v1/image/generate', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${YOUR_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-  
-  const result = await response.json();
-  
-  if (result.errors && result.errors.length > 0) {
-    throw new Error(`Runware API Error: ${result.errors[0].message}`);
-  }
-  
-  return result.data; // Массив сгенерированных изображений
-}
-```
-
-## 🛡️ Обработка ошибок
+### Обработка ошибок в проекте:
 
 ```javascript
 // Проверка на ошибки в ответе
-if (response.data && response.data.length > 0) {
-  // Успех - используем response.data[0].imageURL
-  console.log('Generated:', response.data[0].imageURL);
-} else if (response.errors && response.errors.length > 0) {
-  // Ошибка API
-  console.error('API Error:', response.errors[0].message);
-} else {
-  // Неожиданный ответ
-  console.error('Unexpected response:', response);
+if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
+  console.error('❌ Runware вернул ошибки:', json.errors);
+  const errorMessages = json.errors.map(err => `${err.code}: ${err.message}`).join('; ');
+  reject(new Error(`Runware API error: ${errorMessages}`));
+  return;
+}
+
+// Проверка HTTP статусов
+if (json.__statusCode && json.__statusCode !== 200) {
+  if (json.__statusCode >= 500) {
+    return sendJson(res, 502, { 
+      error: 'Временная проблема на сервере AI. Попробуйте через несколько минут',
+      details: `Runware API статус: ${json.__statusCode}`,
+      provider: 'runware',
+      upstream: json
+    });
+  } else if (json.__statusCode === 429) {
+    return sendJson(res, 429, { 
+      error: 'Превышен лимит запросов к AI. Подождите и попробуйте снова',
+      details: 'Rate limit exceeded',
+      provider: 'runware'
+    });
+  }
 }
 ```
 
-## 📞 Контакты
+## 5. Настройки таймаутов и retry
 
-- **Документация:** https://runware.ai/docs
-- **Support:** support@runware.ai
-- **API Reference:** https://runware.ai/docs/en/image-inference/api-reference
+### HTTP клиент с таймаутом:
+
+```javascript
+const options = {
+  method: 'POST',
+  hostname: 'api.runware.ai',
+  path: '/v1/image/generate',
+  headers: headers
+};
+
+return new Promise((resolve, reject) => {
+  const req = https.request(options, (res) => {
+    // обработка ответа
+  });
+  
+  // Таймаут запроса
+  req.setTimeout(RUNWARE_TIMEOUT_MS, () => {
+    console.error(`⏰ Runware таймаут после ${elapsed}ms`);
+    req.destroy(new Error(`Runware timeout after ${elapsed}ms`));
+  });
+  
+  req.on('error', reject);
+  req.write(payloadStr);
+  req.end();
+});
+```
+
+### Retry логика:
+
+```javascript
+// Вызов с повторами при ошибках 429, 5xx
+json = await callWithRetries(() => requestRunwareGenerate({ 
+  apiKey: RUNWARE_API_KEY, 
+  prompt, 
+  images, 
+  resultsCount 
+}), { retries: 1 });
+
+// Функция retry с экспоненциальной задержкой
+async function callWithRetries(fn, { retries = 2, baseDelayMs = 400, maxDelayMs = 2000 } = {}) {
+  let attempt = 0;
+  while (attempt <= retries) {
+    try {
+      const json = await fn();
+      const status = Number(json && json.__statusCode);
+      const shouldRetry = (status === 429 || (status >= 500 && status < 600));
+      
+      if (shouldRetry && attempt < retries) {
+        const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs) + Math.floor(Math.random() * 200);
+        console.log(`⏳ Retry через ${delay}ms из-за статуса ${status}`);
+        await sleep(delay);
+        attempt += 1;
+        continue;
+      }
+      return json;
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs) + Math.floor(Math.random() * 200);
+      await sleep(delay);
+      attempt += 1;
+    }
+  }
+}
+```
+
+## 6. Fallback стратегия
+
+### Обработка сбоев Runware:
+
+```javascript
+try {
+  // Основной запрос к Runware
+  json = await callWithRetries(() => requestRunwareGenerate({ 
+    apiKey: RUNWARE_API_KEY, 
+    prompt, 
+    images, 
+    resultsCount 
+  }), { retries: 1 });
+} catch (error) {
+  console.error('🔥 Ошибка при запросе к Runware:', error.message);
+  
+  // Попробуем без референсных изображений
+  if (images.length > 0) {
+    console.log('🔄 Пробуем Runware без референсных изображений...');
+    try {
+      json = await callWithRetries(() => requestRunwareGenerate({ 
+        apiKey: RUNWARE_API_KEY, 
+        prompt: `${prompt} (по мотивам загруженного изображения)`, 
+        images: [], // Без референсов
+        resultsCount 
+      }), { retries: 1 });
+    } catch (noRefError) {
+      // Fallback на Gemini
+      if (API_KEY) {
+        json = await callWithRetries(() => requestGeminiGenerate({ 
+          apiKey: API_KEY, 
+          model: MODEL, 
+          prompt, 
+          images 
+        }), { retries: 1 });
+      }
+    }
+  }
+}
+```
+
+## 7. Логирование и диагностика
+
+### Подробное логирование запросов:
+
+```javascript
+console.log(`🎯 Runware запрос:`, {
+  resultsCount,
+  hasReferenceImages,
+  referenceImagesCount: referenceImages.length,
+  promptLength: prompt.length,
+  promptPreview: prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''),
+  taskUUID,
+  timeout: `${RUNWARE_TIMEOUT_MS}ms`
+});
+
+console.log(`📤 Отправляем payload размером ${payloadStr.length} байт`);
+console.log(`🔍 Содержимое payload:`, JSON.stringify(payload, null, 2));
+
+// При получении ответа
+console.log(`✅ Runware запрос завершен за ${elapsed}ms`);
+console.log('📦 Runware response structure:', JSON.stringify(json, null, 2));
+
+if (json.data && Array.isArray(json.data)) {
+  json.data.forEach((item, index) => {
+    if (item && item.imageURL) {
+      console.log(`🖼️ Изображение ${index + 1}: ${item.imageURL} (cost: ${item.cost})`);
+    }
+  });
+}
+```
+
+## 8. Использование в клиентском коде
+
+### Frontend отправка запроса:
+
+```javascript
+async function callEditApi(files, prompt, textOnly, canvasRatio, resultsCount = 1) {
+  const form = new FormData();
+  
+  // Добавляем изображения
+  if (!textOnly) {
+    files.forEach((f) => form.append('images', f, f.name));
+  }
+  
+  // Параметры запроса
+  form.append('textOnly', textOnly ? '1' : '0');
+  form.append('prompt', prompt);
+  form.append('resultsCount', String(resultsCount)); // Количество результатов для Runware
+  
+  const resp = await fetch('/api/edit', {
+    method: 'POST',
+    body: form,
+    signal: controller.signal // Для отмены запроса
+  });
+  
+  const data = await resp.json();
+  return data.results || [];
+}
+```
+
+### Рендеринг результатов:
+
+```javascript
+function renderResults(items) {
+  items.forEach((it, idx) => {
+    let imageSrc;
+    if (it.imageURL) {
+      // Runware возвращает готовый URL
+      imageSrc = it.imageURL;
+    } else if (it.b64) {
+      // Gemini/OpenRouter возвращают base64
+      imageSrc = `data:${it.mimeType};base64,${it.b64}`;
+    }
+    
+    const img = document.createElement('img');
+    img.src = imageSrc;
+    // ... рендеринг
+  });
+}
+```
+
+## Основные отличия Runware от других провайдеров
+
+1. **URL вместо base64** - Runware возвращает готовые URL изображений
+2. **Batch генерация** - можно запросить несколько изображений сразу (`numberResults`)
+3. **Стоимость в ответе** - каждый результат содержит информацию о стоимости
+4. **UUID для отслеживания** - каждое изображение имеет уникальный ID
+5. **Референсные изображения** - поддержка image-to-image через `referenceImages`
+
+## Рекомендуемые настройки
+
+- **Таймаут**: 120-180 секунд (генерация может занимать много времени)
+- **Retry**: 1-2 попытки при ошибках сети/сервера  
+- **Batch size**: 1-4 изображения за раз
+- **Fallback**: предусмотреть резервный провайдер
+- **Логирование**: детальное для диагностики проблем
