@@ -793,7 +793,14 @@ async function handleSession(req, res) {
       if (!fs.existsSync(filePath)) {
         return sendJson(res, 404, { error: 'Файл не найден' });
       }
-      
+      if (req.method === 'DELETE') {
+        try {
+          fs.unlinkSync(filePath);
+          return sendJson(res, 200, { ok: true, deleted: fileName });
+        } catch (e) {
+          return sendJson(res, 500, { error: 'Не удалось удалить файл', message: e && e.message });
+        }
+      }
       const mimeType = getImageMimeType(fileName);
       res.writeHead(200, { 'content-type': mimeType });
       return fs.createReadStream(filePath).pipe(res);
@@ -840,7 +847,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && parsed.pathname === '/api/upload') {
     return void handleUpload(req, res);
   }
-  if (req.method === 'GET' && parsed.pathname.startsWith('/api/session/')) {
+  if ((req.method === 'GET' || req.method === 'DELETE') && parsed.pathname.startsWith('/api/session/')) {
     return void handleSession(req, res);
   }
   if (req.method === 'GET') return serveStatic(req, res);

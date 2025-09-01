@@ -320,3 +320,71 @@ button.danger:hover { border-color: rgba(255,107,107,.35); }
   textarea { min-height: 120px; font-size: 16px; }
 }
 
+/* Mentions menu */
+.mention-menu {
+  position: absolute;
+  z-index: 60;
+  background: rgba(15,17,22,.98);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.45);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto;
+  width: 360px;
+  transition: opacity .12s ease, visibility .12s ease;
+}
+.mention-menu[aria-hidden="true"] { opacity: 0; visibility: hidden; }
+.mention-menu[aria-hidden="false"] { opacity: 1; visibility: visible; }
+
+.mention-item {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mention-item:hover { background: rgba(255,255,255,.04); }
+.mention-item.active { outline: 2px solid rgba(110,168,254,.45); outline-offset: -2px; }
+.mention-thumb {
+  width: 44px; height: 44px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.mention-text { display: grid; gap: 2px; }
+.mention-title { font-weight: 600; color: #dfe7f7; font-size: 13px; }
+.mention-sub { color: var(--muted); font-size: 12px; }
+
+/* Prompt mentions overlay */
+.prompt-mentions-overlay {
+  position: absolute;
+  pointer-events: none; /* не блокируем клики по textarea */
+  z-index: 55;
+}
+.prompt-mentions-overlay[aria-hidden="true"] { display: none; }
+.prompt-mention-hit {
+  position: absolute;
+  cursor: help;
+  pointer-events: auto; /* только хитбоксы ловят события */
+}
+.mention-preview-float {
+  position: absolute;
+  z-index: 70;
+  background: rgba(10,12,16,.96);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  padding: 6px;
+  pointer-events: none; /* подсказка не перехватывает клики */
+}
+.mention-preview-float[aria-hidden="true"] { display: none; }
+.mention-preview-float img {
+  max-width: 220px;
+  max-height: 220px;
+  display: block;
+  border-radius: 6px;
+}
+

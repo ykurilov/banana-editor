@@ -52,6 +52,13 @@
   /** @type {number} */
   let lastSelectedIndex = -1;
   
+  // Mentions (@imgN) helpers/state
+  /** @type {string[]} */ let filePreviewDataUrls = [];
+  /** @type {HTMLDivElement|null} */ let mentionMenu = null;
+  /** @type {boolean} */ let mentionOpen = false;
+  /** @type {number} */ let mentionActiveIndex = 0;
+  /** @type {number} */ let mentionTokenStart = -1;
+  
   /** Управление сессией для серверного хранения */
   let currentSessionId = localStorage.getItem('currentSessionId') || null;
   
@@ -188,6 +195,8 @@
     inputPreview.innerHTML = '';
     if (!files || files.length === 0) return;
     const urls = await Promise.all(Array.from(files).map(readFileAsDataURL));
+    // Кэшируем превью для меню упоминаний
+    filePreviewDataUrls = urls;
     urls.forEach((url, idx) => {
       const file = files[idx];
       const wrapper = document.createElement('div');
@@ -202,7 +211,7 @@
       del.innerHTML = '✕';
       del.addEventListener('click', (e) => {
         e.stopPropagation();
-        removeInputAt(idx);
+        void removeInputAtWithServer(idx);
       });
       const meta = document.createElement('div');
       meta.className = 'meta';
@@ -213,6 +222,346 @@
       wrapper.appendChild(meta);
       inputPreview.appendChild(wrapper);
     });
+  }
+
+  // ===== Mentions (@imgN) =====
+
+  function ensureMentionMenu() {
+    if (mentionMenu) return mentionMenu;
+    const el = document.createElement('div');
+    el.id = 'mentionMenu';
+    el.className = 'mention-menu';
+    el.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(el);
+    mentionMenu = el;
+    return el;
+  }
+
+  function positionMentionMenu() {
+    if (!mentionOpen || !mentionMenu || !promptInput) return;
+    const rect = promptInput.getBoundingClientRect();
+    const top = rect.bottom + 6 + window.scrollY;
+    const left = rect.left + 12 + window.scrollX;
+    mentionMenu.style.top = `${top}px`;
+    mentionMenu.style.left = `${left}px`;
+    mentionMenu.style.width = `${Math.min(420, rect.width - 24)}px`;
+  }
+
+  function closeMentionMenu() {
+    if (!mentionMenu) return;
+    mentionOpen = false;
+    mentionMenu.setAttribute('aria-hidden', 'true');
+    mentionMenu.innerHTML = '';
+  }
+
+  function buildMentionItems(query) {
+    // Порядок как при отправке: если есть выделение — только выделенные (по возрастанию индексов), иначе все
+    const indices = (selectedIndices && selectedIndices.size > 0)
+      ? Array.from(selectedIndices).sort((a, b) => a - b)
+      : Array.from({ length: currentFiles.length }, (_, i) => i);
+
+    const q = String(query || '').toLowerCase();
+    const qDigits = q.replace(/[^0-9]/g, '');
+    const items = [];
+
+    indices.forEach((origIndex, pos) => {
+      const label = `img${pos + 1}`; // imgN соответствует позиции в отправляемом массиве
+      // Фильтрация по префиксу 'img' и/или номеру
+      if (q) {
+        const matchByLabel = label.startsWith(q);
+        const matchByNumber = qDigits && String(pos + 1).startsWith(qDigits);
+        if (!matchByLabel && !matchByNumber) return;
+      }
+      const file = currentFiles[origIndex];
+      items.push({
+        pos,
+        origIndex,
+        label,
+        name: file && file.name ? file.name : `image_${origIndex + 1}`,
+        size: file && Number.isFinite(file.size) ? file.size : 0,
+        thumb: filePreviewDataUrls[origIndex] || ''
+      });
+    });
+
+    return items;
+  }
+
+  function openMentionMenu(query) {
+    if (!currentFiles.length) return closeMentionMenu();
+    const menu = ensureMentionMenu();
+    const items = buildMentionItems(query);
+    menu.innerHTML = '';
+
+    items.forEach((it, idx) => {
+      const row = document.createElement('div');
+      row.className = 'mention-item' + (idx === 0 ? ' active' : '');
+      row.setAttribute('data-pos', String(it.pos));
+      row.setAttribute('data-orig', String(it.origIndex));
+      const thumb = document.createElement('img');
+      thumb.className = 'mention-thumb';
+      if (it.thumb) thumb.src = it.thumb;
+      thumb.alt = it.label;
+      const textWrap = document.createElement('div');
+      textWrap.className = 'mention-text';
+      const main = document.createElement('div');
+      main.className = 'mention-title';
+      main.textContent = it.label;
+      const sub = document.createElement('div');
+      sub.className = 'mention-sub';
+      const sizeText = it.size ? ` • ${formatSize(it.size)}` : '';
+      sub.textContent = `${it.name}${sizeText}`;
+      textWrap.appendChild(main);
+      textWrap.appendChild(sub);
+      row.appendChild(thumb);
+      row.appendChild(textWrap);
+      row.addEventListener('mouseenter', () => {
+        const act = menu.querySelector('.mention-item.active');
+        if (act) act.classList.remove('active');
+        row.classList.add('active');
+        mentionActiveIndex = idx;
+      });
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        insertMentionAtPos(it.pos);
+      });
+      menu.appendChild(row);
+    });
+    mentionActiveIndex = 0;
+    mentionOpen = true;
+    menu.setAttribute('aria-hidden', 'false');
+    positionMentionMenu();
+  }
+
+  function findMentionTokenStart(text, caret) {
+    // Находим начало токена от '@' до каретки
+    for (let i = caret - 1; i >= 0; i -= 1) {
+      const ch = text[i];
+      if (ch === '@') return i;
+      if (/\s/.test(ch)) break;
+    }
+    return -1;
+  }
+
+  function parseMentionQuery(text, caret) {
+    const start = findMentionTokenStart(text, caret);
+    if (start === -1) return { start: -1, query: '' };
+    const raw = text.slice(start + 1, caret);
+    return { start, query: raw };
+  }
+
+  function handlePromptInputForMentions() {
+    const caret = promptInput.selectionStart || 0;
+    const text = String(promptInput.value || '');
+    const { start, query } = parseMentionQuery(text, caret);
+    mentionTokenStart = start;
+    if (start !== -1) {
+      openMentionMenu(query.trim().toLowerCase());
+    } else {
+      closeMentionMenu();
+    }
+  }
+
+  function moveMentionActive(delta) {
+    if (!mentionMenu) return;
+    const rows = Array.from(mentionMenu.querySelectorAll('.mention-item'));
+    if (!rows.length) return;
+    const cur = mentionActiveIndex;
+    const next = (cur + delta + rows.length) % rows.length;
+    rows[cur] && rows[cur].classList.remove('active');
+    rows[next] && rows[next].classList.add('active');
+    mentionActiveIndex = next;
+    // Скроллим к активному
+    const el = rows[next];
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function insertMentionAtActive() {
+    if (!mentionMenu) return;
+    const rows = Array.from(mentionMenu.querySelectorAll('.mention-item'));
+    const row = rows[mentionActiveIndex];
+    if (!row) return;
+    const pos = Number(row.getAttribute('data-pos'));
+    insertMentionAtPos(pos);
+  }
+
+  function insertMentionAtPos(pos) {
+    try {
+      const caret = promptInput.selectionStart || 0;
+      const text = String(promptInput.value || '');
+      if (mentionTokenStart === -1 || mentionTokenStart >= caret) return;
+      const before = text.slice(0, mentionTokenStart);
+      const after = text.slice(caret);
+      // Обеспечиваем строгий мэппинг: если нет выделения — выделяем выбранное изображение
+      const hadSelection = selectedIndices && selectedIndices.size > 0;
+      const indicesBefore = getSendOrderIndices();
+      const origIndex = indicesBefore[pos];
+      if (!hadSelection && Number.isFinite(origIndex)) {
+        selectedIndices = new Set([origIndex]);
+        updateSelectionStyles();
+      }
+      const indicesAfter = getSendOrderIndices();
+      const effectivePos = indicesAfter.indexOf(origIndex);
+      const token = `@img${(effectivePos >= 0 ? effectivePos : pos) + 1}`;
+      const nextText = `${before}${token} ${after}`;
+      promptInput.value = nextText;
+      const newCaret = (before + token + ' ').length;
+      promptInput.setSelectionRange(newCaret, newCaret);
+      closeMentionMenu();
+      promptInput.focus();
+      // Сохраним промпт
+      try { saveLastPrompt(); } catch (_) {}
+      // Обновим оверлей превью
+      try { renderPromptMentionsOverlay(); } catch (_) {}
+    } catch (_) {}
+  }
+
+  function handlePromptKeydownForMentions(e) {
+    if (!mentionOpen) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionActive(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveMentionActive(-1); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMentionAtActive(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeMentionMenu(); }
+  }
+
+  // ===== Prompt mentions overlay (hover previews in textarea) =====
+  /** @type {HTMLDivElement|null} */ let promptOverlay = null;
+  /** @type {HTMLDivElement|null} */ let promptMirror = null;
+  /** @type {HTMLDivElement|null} */ let mentionFloat = null;
+
+  function ensurePromptMentionsInfra() {
+    if (!promptOverlay) {
+      const ov = document.createElement('div');
+      ov.className = 'prompt-mentions-overlay';
+      ov.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(ov);
+      promptOverlay = ov;
+    }
+    if (!promptMirror) {
+      const mir = document.createElement('div');
+      mir.className = 'prompt-mentions-mirror';
+      mir.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(mir);
+      promptMirror = mir;
+    }
+    if (!mentionFloat) {
+      const fl = document.createElement('div');
+      fl.className = 'mention-preview-float';
+      fl.setAttribute('aria-hidden', 'true');
+      const img = document.createElement('img');
+      fl.appendChild(img);
+      document.body.appendChild(fl);
+      mentionFloat = fl;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function getSendOrderIndices() {
+    return (selectedIndices && selectedIndices.size > 0)
+      ? Array.from(selectedIndices).sort((a, b) => a - b)
+      : Array.from({ length: currentFiles.length }, (_, i) => i);
+  }
+
+  function showMentionFloatAt(x, y, pos) {
+    if (!mentionFloat) return;
+    const indices = getSendOrderIndices();
+    const orig = indices[pos];
+    const url = filePreviewDataUrls[orig];
+    if (!url) return;
+    const img = /** @type {HTMLImageElement} */ (mentionFloat.querySelector('img'));
+    img.src = url;
+    mentionFloat.style.left = `${x + 10}px`;
+    mentionFloat.style.top = `${y + 10}px`;
+    mentionFloat.setAttribute('aria-hidden', 'false');
+  }
+
+  function hideMentionFloat() {
+    if (!mentionFloat) return;
+    mentionFloat.setAttribute('aria-hidden', 'true');
+  }
+
+  function renderPromptMentionsOverlay() {
+    if (!promptInput) return;
+    ensurePromptMentionsInfra();
+    if (!promptOverlay || !promptMirror) return;
+
+    // Position overlay over textarea
+    const taRect = promptInput.getBoundingClientRect();
+    promptOverlay.style.left = `${taRect.left + window.scrollX}px`;
+    promptOverlay.style.top = `${taRect.top + window.scrollY}px`;
+    promptOverlay.style.width = `${taRect.width}px`;
+    promptOverlay.style.height = `${taRect.height}px`;
+    promptOverlay.innerHTML = '';
+
+    // Prepare mirror with same styles
+    const cs = window.getComputedStyle(promptInput);
+    const mirrorStyle = [
+      'position: absolute',
+      'visibility: hidden',
+      'white-space: pre-wrap',
+      'word-wrap: break-word',
+      'overflow-wrap: anywhere',
+      `font: ${cs.font}`,
+      `line-height: ${cs.lineHeight}`,
+      `padding: ${cs.paddingTop} ${cs.paddingRight} ${cs.paddingBottom} ${cs.paddingLeft}`,
+      `border: ${cs.border}`,
+      `box-sizing: ${cs.boxSizing}`,
+      `width: ${taRect.width}px`,
+    ].join(';');
+    promptMirror.setAttribute('style', mirrorStyle);
+    promptMirror.style.left = `${taRect.left + window.scrollX}px`;
+    promptMirror.style.top = `${taRect.top + window.scrollY}px`;
+
+    const text = String(promptInput.value || '');
+    const html = escapeHtml(text)
+      .replace(/\n/g, '<br>')
+      // wrap @imgN tokens
+      .replace(/(@img(\d+))/g, '<span class="mention-token" data-pos="$2">$1</span>');
+    promptMirror.innerHTML = html;
+
+    const tokens = Array.from(promptMirror.querySelectorAll('.mention-token'));
+    if (!tokens.length) {
+      promptOverlay.setAttribute('aria-hidden', 'true');
+      hideMentionFloat();
+      return;
+    }
+
+    // Create overlay hit areas for each client rect
+    tokens.forEach((tok) => {
+      const posNum = Math.max(1, Number(tok.getAttribute('data-pos') || '0')) - 1; // pos -> 0-based
+      const rects = tok.getClientRects ? Array.from(tok.getClientRects()) : [];
+      rects.forEach((r) => {
+        const hit = document.createElement('div');
+        hit.className = 'prompt-mention-hit';
+        hit.style.left = `${r.left - taRect.left}px`;
+        hit.style.top = `${r.top - taRect.top}px`;
+        hit.style.width = `${r.width}px`;
+        hit.style.height = `${r.height}px`;
+        hit.setAttribute('data-pos', String(posNum));
+        hit.title = `@img${posNum + 1}`;
+        hit.addEventListener('mouseenter', (e) => {
+          const bb = /** @type {HTMLElement} */(e.currentTarget).getBoundingClientRect();
+          showMentionFloatAt(bb.right + window.scrollX, bb.top + window.scrollY, posNum);
+        });
+        hit.addEventListener('mouseleave', hideMentionFloat);
+        promptOverlay.appendChild(hit);
+      });
+    });
+
+    promptOverlay.setAttribute('aria-hidden', 'false');
+  }
+
+  // Синхронизация оверлея и защита фокуса
+  function syncMentionsOverlay() {
+    try { renderPromptMentionsOverlay(); } catch (_) {}
   }
 
   function updateSelectionStyles() {
@@ -239,9 +588,22 @@
     updateSelectionStyles();
   }
 
-  // Удаление одного изображения по индексу
-  function removeInputAt(idx) {
+  // Удаление одного изображения по индексу (клиент+сервер)
+  async function removeInputAtWithServer(idx) {
     if (idx < 0 || idx >= currentFiles.length) return;
+    const file = currentFiles[idx];
+    // Пытаемся удалить с сервера, если есть активная сессия и у файла есть serverName
+    try {
+      const base = getApiBaseEffective();
+      const sessionId = localStorage.getItem('currentSessionId');
+      const serverName = file && (file.serverName || file.name) ? String(file.serverName || file.name) : '';
+      if (sessionId && serverName) {
+        const url = (base ? `${base.replace(/\/$/, '')}` : '') + `/api/session/${sessionId}/file/${encodeURIComponent(serverName)}`;
+        await fetch(url, { method: 'DELETE' });
+      }
+    } catch (e) {
+      // Игнорируем ошибки удаления - файл уже удален локально
+    }
     currentFiles.splice(idx, 1);
     // Пересчёт выделения
     const next = new Set();
@@ -255,6 +617,7 @@
       else if (lastSelectedIndex === idx) lastSelectedIndex = -1;
     }
     void renderInputPreview(currentFiles);
+    try { syncMentionsOverlay(); } catch (_) {}
   }
 
   imagesInput.addEventListener('change', async () => {
@@ -358,7 +721,7 @@
       try {
         const canvasFile = await loadCanvasFile(`${canvasRatio}.png`);
         form.append('images', canvasFile, canvasFile.name);
-        finalPrompt += 'Соотношение сторон как у приложенного пустого изображения. Изображение должно заполнять пространство полностью. Не должно быть черных полей.';
+        finalPrompt += 'Aspect ratio should match the attached blank image. The image must completely fill the space. There should be no black bars.';
       } catch (e) {
         console.warn('Не удалось загрузить холст:', e);
       }
@@ -738,6 +1101,18 @@
         const data = await resp.json();
         currentSessionId = data.sessionId;
         localStorage.setItem('currentSessionId', currentSessionId);
+        // Присвоим загруженным файлам serverName
+        if (Array.isArray(data.files)) {
+          let assigned = 0;
+          for (let i = currentFiles.length - files.length; i < currentFiles.length; i += 1) {
+            const cf = currentFiles[i];
+            const info = data.files[assigned];
+            if (cf && info) {
+              try { Object.defineProperty(cf, 'serverName', { value: info.savedName, enumerable: false, configurable: true }); } catch (_) { cf.serverName = info.savedName; }
+              assigned += 1;
+            }
+          }
+        }
         console.log('Images saved to server:', data);
       } else {
         console.warn('Failed to save images to server:', resp.status);
@@ -777,6 +1152,7 @@
           if (fileResp.ok) {
             const blob = await fileResp.blob();
             const file = new File([blob], fileInfo.name, { type: fileInfo.mimeType });
+            try { Object.defineProperty(file, 'serverName', { value: fileInfo.name, enumerable: false, configurable: true }); } catch (_) { file.serverName = fileInfo.name; }
             files.push(file);
           }
         } catch (e) {
@@ -1118,12 +1494,21 @@
     };
     
     promptInput.addEventListener('input', debouncedSavePrompt);
+    // Mentions: открытие/фильтрация по вводу и клику
+    promptInput.addEventListener('input', (e) => { handlePromptInputForMentions(); syncMentionsOverlay(); });
+    promptInput.addEventListener('click', (e) => { handlePromptInputForMentions(); syncMentionsOverlay(); });
+    promptInput.addEventListener('keydown', handlePromptKeydownForMentions);
+    promptInput.addEventListener('blur', () => { closeMentionMenu(); if (promptOverlay) promptOverlay.setAttribute('aria-hidden', 'true'); hideMentionFloat(); });
     promptInput.addEventListener('blur', () => {
       // Сохраняем сразу при потере фокуса
       if (savePromptTimeout) clearTimeout(savePromptTimeout);
       saveLastPrompt();
     });
   }
+
+  // Пере-позиционирование меню при ресайзе/скролле
+  window.addEventListener('resize', () => { positionMentionMenu(); syncMentionsOverlay(); });
+  window.addEventListener('scroll', () => { positionMentionMenu(); syncMentionsOverlay(); }, true);
   
   // ===== Auto-restore images on page load =====
   (async function initializeApp() {
