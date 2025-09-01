@@ -52,6 +52,12 @@
   /** @type {number} */
   let lastSelectedIndex = -1;
   
+  // Mobile multiselect state
+  /** @type {boolean} */ let multiSelectMode = false;
+  /** @type {number|null} */ let longPressTimer = null;
+  /** @type {HTMLElement|null} */ let longPressTarget = null;
+  /** @type {Event|null} */ let longPressEvent = null;
+  
   // Mentions (@imgN) helpers/state
   /** @type {string[]} */ let filePreviewDataUrls = [];
   /** @type {HTMLDivElement|null} */ let mentionMenu = null;
@@ -64,6 +70,7 @@
   
   /** localStorage ключи */
   const LS_LAST_PROMPT_KEY = 'lastPrompt_v1';
+  const LS_SELECTED_INDICES_KEY = 'selectedIndices_v1';
 
   /**
    * Форматирует байты в читаемый размер
@@ -217,6 +224,24 @@
       meta.className = 'meta';
       meta.textContent = `${file.name} • ${formatSize(file.size)}`;
       wrapper.addEventListener('click', (e) => handleThumbClick(e, idx));
+      
+      // Добавляем обработчики долгого нажатия для мобильных
+      wrapper.addEventListener('touchstart', (e) => handleLongPressStart(e, idx), { passive: true });
+      wrapper.addEventListener('touchend', handleLongPressEnd, { passive: true });
+      wrapper.addEventListener('touchmove', handleLongPressEnd, { passive: true });
+      wrapper.addEventListener('mousedown', (e) => handleLongPressStart(e, idx));
+      wrapper.addEventListener('mouseup', handleLongPressEnd);
+      wrapper.addEventListener('mouseleave', handleLongPressEnd);
+      
+      // Отключаем контекстное меню для iOS только для загруженных превью
+      wrapper.addEventListener('contextmenu', (e) => {
+        // Проверяем, что это именно inputPreview (загруженные изображения)
+        if (wrapper.closest('#inputPreview')) {
+          e.preventDefault();
+          return false;
+        }
+      });
+      
       wrapper.appendChild(img);
       wrapper.appendChild(del);
       wrapper.appendChild(meta);
@@ -570,9 +595,28 @@
       if (selectedIndices.has(i)) node.classList.add('selected');
       else node.classList.remove('selected');
     });
+    
+    // Сохраняем выделение
+    saveSelectedIndices();
+    
+    // Обновляем обратную связь в режиме множественного выбора
+    if (multiSelectMode) {
+      showMultiSelectFeedback();
+    }
   }
 
   function handleThumbClick(e, idx) {
+    if (multiSelectMode) {
+      // В режиме множественного выбора - toggle выделение
+      if (selectedIndices.has(idx)) selectedIndices.delete(idx); 
+      else selectedIndices.add(idx);
+      lastSelectedIndex = idx;
+      
+      // Если ничего не выделено - выходим из режима
+      if (selectedIndices.size === 0) {
+        exitMultiSelectMode();
+      }
+    } else {
     const isToggle = e.ctrlKey || e.metaKey;
     const isRange = e.shiftKey && lastSelectedIndex >= 0;
     if (isRange) {
@@ -584,8 +628,81 @@
     } else {
       selectedIndices = new Set([idx]);
       lastSelectedIndex = idx;
+      }
     }
     updateSelectionStyles();
+  }
+
+  // ===== Mobile multiselect mode =====
+  
+  function enterMultiSelectMode(initiatorIdx) {
+    multiSelectMode = true;
+    document.body.classList.add('multiselect-mode');
+    
+    // Добавляем инициатор в выделение если он не выделен
+    if (!selectedIndices.has(initiatorIdx)) {
+      selectedIndices.add(initiatorIdx);
+    }
+    
+    updateSelectionStyles();
+    showMultiSelectFeedback();
+  }
+  
+  function exitMultiSelectMode() {
+    multiSelectMode = false;
+    document.body.classList.remove('multiselect-mode');
+    hideMultiSelectFeedback();
+    updateSelectionStyles();
+  }
+  
+  function showMultiSelectFeedback() {
+    // Показываем визуальную обратную связь
+    const count = selectedIndices.size;
+    if (count > 0) {
+      setStatus(`🔹 Выбрано ${count} изображен${count === 1 ? 'ие' : count < 5 ? 'ия' : 'ий'}. Нажмите вне превью для выхода`);
+    }
+  }
+  
+  function hideMultiSelectFeedback() {
+    // Очищаем статус если это наше сообщение
+    const statusEl = document.querySelector('.status');
+    if (statusEl && statusEl.textContent.includes('🔹 Выбрано')) {
+      setStatus('');
+    }
+  }
+
+  // ===== Long press handlers =====
+  
+  function handleLongPressStart(e, idx) {
+    // Не запускаем долгое нажатие если уже в режиме множественного выбора
+    if (multiSelectMode) return;
+    
+    longPressTarget = e.currentTarget;
+    longPressEvent = e;
+    longPressTimer = setTimeout(() => {
+      if (longPressTarget) {
+        // Вибрация для мобильных (если поддерживается)
+        if (navigator.vibrate) {
+          navigator.vibrate(50);
+        }
+        
+        // Входим в режим множественного выбора
+        enterMultiSelectMode(idx);
+        
+        longPressTarget = null;
+        longPressEvent = null;
+        longPressTimer = null;
+      }
+    }, 500); // 500ms для долгого нажатия
+  }
+  
+  function handleLongPressEnd() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    longPressTarget = null;
+    longPressEvent = null;
   }
 
   // Удаление одного изображения по индексу (клиент+сервер)
@@ -671,13 +788,20 @@
     currentFiles = [];
     selectedIndices = new Set();
     lastSelectedIndex = -1;
+    filePreviewDataUrls = [];
+    
+    // Выходим из режима множественного выбора
+    if (multiSelectMode) {
+      exitMultiSelectMode();
+    }
     
     // Начинаем новую сессию на сервере
     currentSessionId = null;
     localStorage.removeItem('currentSessionId');
     
-    // Очищаем сохраненный промпт
+    // Очищаем сохраненный промпт и выделение
     clearLastPrompt();
+    localStorage.removeItem(LS_SELECTED_INDICES_KEY);
   });
 
   /**
@@ -1470,6 +1594,34 @@
       return '';
     }
   }
+
+  /**
+   * Сохраняет выделенные индексы в localStorage
+   */
+  function saveSelectedIndices() {
+    try {
+      const indices = Array.from(selectedIndices);
+      localStorage.setItem(LS_SELECTED_INDICES_KEY, JSON.stringify(indices));
+    } catch (e) {
+      console.warn('Failed to save selection to localStorage:', e);
+    }
+  }
+  
+  /**
+   * Загружает выделенные индексы из localStorage
+   */
+  function loadSelectedIndices() {
+    try {
+      const saved = localStorage.getItem(LS_SELECTED_INDICES_KEY);
+      if (saved) {
+        const indices = JSON.parse(saved);
+        return new Set(indices);
+      }
+    } catch (e) {
+      console.warn('Failed to load selection from localStorage:', e);
+    }
+    return new Set();
+  }
   
   /**
    * Очищает сохраненный промпт
@@ -1517,6 +1669,10 @@
       const restoredFiles = await loadImagesFromServer();
       if (restoredFiles.length > 0) {
         currentFiles = restoredFiles;
+        
+        // Восстанавливаем выделение
+        selectedIndices = loadSelectedIndices();
+        
         void renderInputPreview(currentFiles);
       }
       
@@ -1525,6 +1681,17 @@
       if (savedPrompt) {
         promptInput.value = savedPrompt;
       }
+      
+      // Обработчик клика по документу для выхода из режима множественного выбора
+      document.addEventListener('click', (e) => {
+        if (multiSelectMode) {
+          // Проверяем, кликнули ли вне области превью
+          const clickedInsidePreview = e.target.closest('#inputPreview');
+          if (!clickedInsidePreview) {
+            exitMultiSelectMode();
+          }
+        }
+      });
       
       // Показываем уведомление о восстановленных данных
       const messages = [];
